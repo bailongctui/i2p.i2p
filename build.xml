@@ -81,12 +81,14 @@
             <echo message="to patch the source and build the packages." />
     </target>
 
+    <property name="gpg" value="gpg" />
+
     <macrodef name="gpgsign">
         <attribute name="file" />
         <sequential>
             <delete file="@{file}.sig" quiet="true" />
-            <exec executable="gpg" failonerror="true">
-                <arg value="--default-key" />
+            <exec executable="${gpg}" failonerror="true">
+                <arg value="-u" />
                 <arg value="${release.gpg.keyid}" />
                 <arg value="-b" />
                 <arg value="@{file}" />
@@ -103,8 +105,8 @@
         <attribute name="file" />
         <sequential>
             <delete file="@{file}.asc" quiet="true" />
-            <exec executable="gpg" failonerror="true">
-                <arg value="--default-key" />
+            <exec executable="${gpg}" failonerror="true">
+                <arg value="-u" />
                 <arg value="${release.gpg.keyid}" />
                 <arg value="-ab" />
                 <arg value="@{file}" />
@@ -430,8 +432,20 @@
 
     <!-- end of sub-build.xml targets -->
 
+    <!-- monotone targets -->
+
     <target name="checkForMtn" >
         <available property="mtn.available" file="_MTN" type="dir" />
+    </target>
+
+    <target name="failIfNoMtn" depends="checkForMtn">
+        <fail message="This target cannot be used without Monotone! Use &quot;fakeroot debian/rules get-orig-source&quot; instead.">
+            <condition>
+                <not>
+                    <isset property="mtn.available" />
+                </not>
+            </condition>
+        </fail>
     </target>
 
     <target name="getMtnRev" depends="checkForMtn" if="mtn.available" >
@@ -488,6 +502,10 @@
             match='(^\s+public\s+final\s+static\s+long\s+BUILD\s+=\s+)[0-9]+;' replace='\1${new.i2p.build.number};'/>
     </target>
 
+    <!-- end monotone targets -->
+
+    <!-- launch4j targets -->
+
     <condition property="noExe">
         <not>
             <!-- We only have launch4j binaries for the following systems -->
@@ -531,6 +549,8 @@
                  classpath="${basedir}/installer/lib/launch4j/launch4j.jar:${basedir}/installer/lib/launch4j/lib/xstream.jar" />
      </target>
 
+    <!-- end launch4j targets -->
+
      <!--
           the files are now copied to the build directory
           in the build* targets
@@ -543,6 +563,8 @@
         <copy file="apps/susidns/src/lib/jstl.jar" todir="build/" />
         <copy file="apps/susidns/src/lib/standard.jar" todir="build/" />
     </target>
+
+    <!-- jbigi targets -->
 
     <target name="jbigi-list-changes" depends="checkForMtn" if="mtn.available">
         <exec executable="mtn" outputproperty="workspace.changes.jbigi" errorproperty="mtn.error.jbigi" failifexecutionfails="false" >
@@ -675,6 +697,8 @@
         </jar>
     </target>
 
+    <!-- end jbigi targets -->
+
     <!-- the apps need to compile the jsps to poupdate -->
     <target name="poupdate" depends="buildRouter, buildStreaming, buildSystray, buildJetty, buildDesktopGui, buildJrobin" >
         <echo message="Setting environment variable LG2 to a lang code (eg: de,zh,nl etc)" />
@@ -723,7 +747,7 @@
             <group title="Core SDK (i2p.jar)" packages="net.i2p:net.i2p.*:net.i2p.client:net.i2p.client.*:net.i2p.internal:net.i2p.internal.*:freenet.support.CPUInformation:org.bouncycastle.oldcrypto:org.bouncycastle.oldcrypto.*:gnu.crypto.*:gnu.getopt:gnu.gettext:com.nettgryppa.security:org.apache.http.conn.ssl:org.apache.http.conn.util:org.apache.http.util" />
             <group title="Streaming Library" packages="net.i2p.client.streaming:net.i2p.client.streaming.impl" />
             <group title="Router" packages="net.i2p.router:net.i2p.router.*:net.i2p.data.i2np:net.i2p.data.router:org.cybergarage:org.cybergarage.*:org.freenetproject:org.xlattice.crypto.filters:com.maxmind.geoip" />
-            <group title="Router Console" packages="net.i2p.router.web:net.i2p.router.update:net.i2p.router.news" />
+            <group title="Router Console" packages="net.i2p.router.web:net.i2p.router.web.*:net.i2p.router.update:net.i2p.router.news" />
             <!-- apps and bridges starting here, alphabetical please -->
             <group title="Addressbook Application" packages="net.i2p.addressbook:net.i2p.router.naming:net.metanotion:net.metanotion.*" />
             <group title="BOB Bridge" packages="net.i2p.BOB" />
@@ -733,7 +757,7 @@
             <group title="I2PTunnel Application" packages="net.i2p.i2ptunnel:net.i2p.i2ptunnel.*" />
             <group title="Imagegen Application" packages="com.docuverse.identicon:com.google.zxing:com.google.zxing.*:net.i2p.imagegen" />
             <group title="Installer Utilities" packages="net.i2p.installer" />
-            <group title="Jetty Utilities" packages="net.i2p.jetty:net.i2p.servlet:net.i2p.servlet.*:org.mortbay.servlet:org.mortbay.util" />
+            <group title="Jetty Utilities" packages="net.i2p.jetty:net.i2p.servlet:net.i2p.servlet.*" />
             <group title="JRobin Library" packages="org.jrobin:org.jrobin.*:engine.misc" />
             <group title="SAM Bridge" packages="net.i2p.sam" />
             <group title="SAM Demos" packages="net.i2p.sam.client" />
@@ -930,7 +954,7 @@
             </fail>
     </target>
 
-    <target name="-pre-release" depends="-pre-sign">
+    <target name="-pre-release" depends="-pre-sign, failIfNoMtn">
             <echo message="================================================================" />
             <echo message="Did you update these files?" />
             <exec executable="ls" failonerror="true">
@@ -1272,17 +1296,29 @@
         </copy>
     </target>
 
-    <!-- todo handle alt package too -->
     <!--
-       glassfish-javaee.jar has ancient and conflicting classes, e.g. javax.mail
-    <target name="copyjstl-unlesspkg" unless="${with-glassfish-javaee}" >
+       jstl.jar
+       glassfish-javaee.jar has ancient and conflicting classes, e.g. javax.mail,
+       and libjstl1.1-java isn't sufficient,
+       so we only skip it with libtaglibs-standard
     -->
-    <target name="copyjstl-unlesspkg" >
+    <target name="copyjstl-unlesspkg" unless="${with-libtaglibs-standard}" >
         <copy file="apps/susidns/src/lib/jstl.jar" todir="pkg-temp/lib/" />
     </target>
 
-    <!-- todo handle alt package too -->
-    <target name="copystandard-unlesspkg" unless="${with-glassfish-javaee}" >
+    <!-- standard.jar -->
+    <target name="copystandard-unlesspkg" depends="copystandard-unlesspkg1, copystandard-unlesspkg2" />
+    <target name="copystandard-unlesspkg1" >
+        <condition property="with-any-standard-pkg" >
+            <or>
+                <istrue value="${with-libtaglibs-standard}" />
+                <istrue value="${with-glassfish-javaee}" />
+                <istrue value="${libjakarta-taglibs-standard-java}" />
+            </or>
+
+        </condition>
+    </target>
+    <target name="copystandard-unlesspkg2" unless="${with-any-standard-pkg}" >
         <copy file="apps/susidns/src/lib/standard.jar" todir="pkg-temp/lib/" />
     </target>
 
@@ -1297,9 +1333,7 @@
     </target>
 
     <target name="preplicenses-unlesspkg" depends="settomcatprop" unless="${with-libtomcat-java}" >
-<!--  replacement?
-        <copy file="apps/jetty/apache-tomcat-deployer/NOTICE" tofile="pkg-temp/licenses/NOTICE-Tomcat.txt" />
--->
+        <copy file="apps/jetty/apache-tomcat-8.5.23/NOTICE" tofile="pkg-temp/licenses/NOTICE-Tomcat.txt" />
     </target>
 
     <!-- DOES include launch4j licenses for Windows builds -->
@@ -1939,10 +1973,10 @@
          since preppkg puts too much stuff in pkg-temp -->
 <!--
     <target name="release" depends="distclean, updaterWithJettyFixesAndJbigi , updater200WithJettyFixes, preppkg, installer, getReleaseNumber" >
-    <target name="release" depends="verifyReleaseBuildNumbers, -pre-release, distclean, testscripts, updaterWithJettyAndGeoIPRepack, updater200WithJettyAndGeoIP, delete-j6-update, installer-nowindows, delete-nonwindows, installer-windows">
     <target name="release" depends="verifyReleaseBuildNumbers, -pre-release, distclean, testscripts, updaterWithJettyAndJbigiRepack, updater200WithJettyAndJbigi, delete-j6-update, installer-nowindows, delete-nonwindows, installer-windows">
--->
     <target name="release" depends="verifyReleaseBuildNumbers, -pre-release, distclean, testscripts, updaterWithJettyRepack, updater200WithJetty, delete-j6-update, installer-nowindows, delete-nonwindows, installer-windows">
+-->
+    <target name="release" depends="verifyReleaseBuildNumbers, -pre-release, distclean, testscripts, updaterWithJettyAndGeoIPRepack, updater200WithJettyAndGeoIP, delete-j6-update, installer-nowindows, delete-nonwindows, installer-windows">
         <echo message="New version number is ${release.number}" />
         <copy file="i2pupdate.zip" tofile="i2pupdate_${release.number}.zip" />
         <copy file="i2pinstall_${full.version}.jar" tofile="i2pinstall_${release.number}.jar" />
@@ -2019,17 +2053,27 @@
     </target>
 
     <target name="mavenCentral.deps" depends="buildRouter, buildStreaming">
-        <ant dir="core/java/" target="javadocJar" />
-        <ant dir="core/java/" target="sourcesJar" />
-        <ant dir="router/java/" target="javadocJar" />
-        <ant dir="router/java/" target="sourcesJar" />
-        <ant dir="apps/ministreaming/java/" target="javadocJar" />
-        <ant dir="apps/ministreaming/java/" target="sourcesJar" />
-        <ant dir="apps/streaming/java/" target="javadocJar" />
-        <ant dir="apps/streaming/java/" target="sourcesJar" />
-        <ant dir="apps/jetty/" target="servletJar" />
-        <ant dir="apps/jetty/" target="servletJavadocJar" />
-        <ant dir="apps/jetty/" target="servletSourcesJar" />
+        <ant dir="core/java/">
+            <target name="javadocJar" />
+            <target name="sourcesJar" />
+        </ant>
+        <ant dir="router/java/">
+            <target name="javadocJar" />
+            <target name="sourcesJar" />
+        </ant>
+        <ant dir="apps/ministreaming/java/">
+            <target name="javadocJar" />
+            <target name="sourcesJar" />
+        </ant>
+        <ant dir="apps/streaming/java/">
+            <target name="javadocJar" />
+            <target name="sourcesJar" />
+        </ant>
+        <ant dir="apps/jetty/">
+            <target name="servletJar" />
+            <target name="servletJavadocJar" />
+            <target name="servletSourcesJar" />
+        </ant>
     </target>
 
     <target name="mavenCentral" depends="verifyReleaseBuildNumbers, -pre-release, distclean, testscripts, mavenCentral.deps">
@@ -2230,15 +2274,9 @@
         <delete dir="./.pc" />
     </target>
 
-    <target name="debian-tarball" depends="getExtendedVersion">
+    <!-- stretch+, zesty+ -->
+    <target name="debian-tarball" depends="getExtendedVersion, failIfNoMtn">
         <!-- this will use the monotonerc file in the current workspace -->
-        <fail message="This target cannot be used without Monotone! Use &quot;fakeroot debian/rules get-orig-source&quot; instead.">
-            <condition>
-                <not>
-                    <isset property="mtn.available" />
-                </not>
-            </condition>
-        </fail>
         <property name="debian.tarball.name" value="i2p_${Extended.Version}.orig.tar.bz2" />
         <echo message="Checking out fresh copy into ../i2p-${Extended.Version} for tarballing:" />
         <delete dir="../i2p-${Extended.Version}" />
@@ -2254,6 +2292,17 @@
             <fileset dir="../i2p-${Extended.Version}/installer/lib/" />
             <fileset dir="../i2p-${Extended.Version}/Slackware" />
             <fileset dir="../i2p-${Extended.Version}/_MTN" />
+            <fileset dir="../i2p-${Extended.Version}/.idea" />
+            <fileset dir="../i2p-${Extended.Version}/.tx" />
+            <file name="../i2p-${Extended.Version}/.mtn-ignore" />
+            <fileset dir="../i2p-${Extended.Version}/" includes="Docker*" />
+            <file name="../i2p-${Extended.Version}/Makefile.gcj" />
+            <!-- gradle files -->
+            <fileset dir="../i2p-${Extended.Version}/" includes="**/build.gradle" />
+            <fileset dir="../i2p-${Extended.Version}/gradle" />
+            <file name="../i2p-${Extended.Version}/gradlew.bat" />
+            <file name="../i2p-${Extended.Version}/gradle.properties" />
+            <file name="../i2p-${Extended.Version}/settings.gradle" />
             <!-- gettext-base -->
             <fileset dir="../i2p-${Extended.Version}/core/java/src/gnu/gettext" />
             <!-- libgetopt-java -->
@@ -2266,12 +2315,12 @@
             <file name="../i2p-${Extended.Version}/installer/resources/geoip.txt" />
             <file name="../i2p-${Extended.Version}/installer/resources/geoipv6.dat.gz" />
             <!-- libjetty9-java -->
-            <fileset dir="../i2p-${Extended.Version}/apps/jetty/jetty-distribution-9.2.21.v20170120" />
-            <!-- libjstl1.1-java or glassfish-javaee -->
-          <!--
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/jetty-distribution-9.2.22.v20170606" />
+            <!-- libtomcat8-java -->
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/apache-tomcat-8.5.23" />
+            <!-- libjstl1.1-java or glassfish-javaee or libtaglibs-standard -->
             <file name="../i2p-${Extended.Version}/apps/susidns/src/lib/jstl.jar" />
-           -->
-            <!-- libjakarta-taglibs-standard-java or glassfish-javaee -->
+            <!-- libjakarta-taglibs-standard-java or glassfish-javaee or libtaglibs-standard -->
             <file name="../i2p-${Extended.Version}/apps/susidns/src/lib/standard.jar" />
             <!-- anything added above, add in debian-release-tarball also -->
         </delete>
@@ -2284,9 +2333,8 @@
                 <exclude name="installer/resources/geoip.txt"/>
                 <exclude name="installer/resources/geoipv6.dat.gz"/>
                 <exclude name="apps/jetty/jetty-distribution-*/**"/>
-          <!--
+                <exclude name="apps/jetty/apache-tomcat-*/**"/>
                 <exclude name="apps/susidns/src/lib/jstl.jar" />
-           -->
                 <exclude name="apps/susidns/src/lib/standard.jar" />
                 <!-- anything added above, add in debian-release-tarball also -->
             </tarfileset>
@@ -2301,15 +2349,7 @@
       -  We add a 'p' to the release name and tarball since the source package is different;
       -  Launchpad does not allow different source packages with the same name.
       -->
-    <target name="precise-release-tarball" depends="getExtendedVersion">
-        <!-- this will use the monotonerc file in the current workspace -->
-        <fail message="This target cannot be used without Monotone! Use &quot;fakeroot debian/rules get-orig-source&quot; instead.">
-            <condition>
-                <not>
-                    <isset property="mtn.available" />
-                </not>
-            </condition>
-        </fail>
+    <target name="precise-release-tarball" depends="getExtendedVersion, failIfNoMtn">
         <property name="debian.tarball.name" value="i2p_${release.number}p.orig.tar.bz2" />
         <echo message="Checking out fresh copy into ../i2p-${Extended.Version} for tarballing:" />
         <delete dir="../i2p-${Extended.Version}" />
@@ -2327,6 +2367,18 @@
             <fileset dir="../i2p-${Extended.Version}/installer/lib/" />
             <fileset dir="../i2p-${Extended.Version}/Slackware" />
             <fileset dir="../i2p-${Extended.Version}/_MTN" />
+            <fileset dir="../i2p-${Extended.Version}/.idea" />
+            <fileset dir="../i2p-${Extended.Version}/.tx" />
+            <file name="../i2p-${Extended.Version}/.mtn-ignore" />
+            <fileset dir="../i2p-${Extended.Version}/" includes="Docker*" />
+            <file name="../i2p-${Extended.Version}/Makefile.gcj" />
+            <!-- gradle files -->
+            <fileset dir="../i2p-${Extended.Version}/" includes="**/build.gradle" />
+            <fileset dir="../i2p-${Extended.Version}/gradle" />
+            <file name="../i2p-${Extended.Version}/gradlew" />
+            <file name="../i2p-${Extended.Version}/gradlew.bat" />
+            <file name="../i2p-${Extended.Version}/gradle.properties" />
+            <file name="../i2p-${Extended.Version}/settings.gradle" />
             <!-- gettext-base -->
             <fileset dir="../i2p-${Extended.Version}/core/java/src/gnu/gettext" />
             <!-- libgetopt-java -->
@@ -2340,7 +2392,8 @@
             <file name="../i2p-${Extended.Version}/installer/resources/geoipv6.dat.gz" />
             <!-- libjetty9-java -->
           <!--
-            <fileset dir="../i2p-${Extended.Version}/apps/jetty/jetty-distribution-9.2.21.v20170120" />
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/jetty-distribution-9.2.22.v20170606" />
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/apache-tomcat-8.5.23" />
            -->
             <!-- libjstl1.1-java or glassfish-javaee -->
           <!--
@@ -2360,6 +2413,7 @@
                 <exclude name="installer/resources/geoipv6.dat.gz"/>
           <!--
                 <exclude name="apps/jetty/jetty-distribution-*/**"/>
+                <exclude name="apps/jetty/apache-tomcat-*/**"/>
            -->
           <!--
                 <exclude name="apps/susidns/src/lib/jstl.jar" />
@@ -2374,16 +2428,83 @@
         </tar>
     </target>
 
+    <!-- xenial/yakkety only -->
+    <!-- same as debian-release-tarball but with bundled jstl.jar
+         (there's no libtaglibs-standard-* packages)
+      -  We add a 'x' to the release name and tarball since the source package is different;
+      -  Launchpad does not allow different source packages with the same name.
+      -->
+    <target name="xenial-release-tarball" depends="getExtendedVersion, failIfNoMtn">
+        <property name="debian.tarball.name" value="i2p_${release.number}x.orig.tar.bz2" />
+        <echo message="Checking out fresh copy into ../i2p-${Extended.Version} for tarballing:" />
+        <delete dir="../i2p-${Extended.Version}" />
+        <exec executable="mtn" failonerror="true">
+            <arg value="co" />
+            <!-- w: is the revision of the current workspace -->
+            <arg value="-r" />
+            <arg value="w:" />
+            <arg value="-b" />
+            <arg value="i2p.i2p" />
+            <arg value="../i2p-${Extended.Version}" />
+        </exec>
+        <delete includeemptydirs="true" quiet="false" failonerror="false">
+            <fileset dir="../i2p-${Extended.Version}/debian-alt/" />
+            <fileset dir="../i2p-${Extended.Version}/installer/lib/" />
+            <fileset dir="../i2p-${Extended.Version}/Slackware" />
+            <fileset dir="../i2p-${Extended.Version}/_MTN" />
+            <fileset dir="../i2p-${Extended.Version}/.idea" />
+            <fileset dir="../i2p-${Extended.Version}/.tx" />
+            <file name="../i2p-${Extended.Version}/.mtn-ignore" />
+            <fileset dir="../i2p-${Extended.Version}/" includes="Docker*" />
+            <file name="../i2p-${Extended.Version}/Makefile.gcj" />
+            <!-- gradle files -->
+            <fileset dir="../i2p-${Extended.Version}/" includes="**/build.gradle" />
+            <fileset dir="../i2p-${Extended.Version}/gradle" />
+            <file name="../i2p-${Extended.Version}/gradlew" />
+            <file name="../i2p-${Extended.Version}/gradlew.bat" />
+            <file name="../i2p-${Extended.Version}/gradle.properties" />
+            <file name="../i2p-${Extended.Version}/settings.gradle" />
+            <fileset dir="../i2p-${Extended.Version}/core/java/src/gnu/gettext" />
+            <fileset dir="../i2p-${Extended.Version}/core/java/src/gnu/getopt" />
+          <!--
+            <fileset dir="../i2p-${Extended.Version}/core/java/src/org/apache/http" />
+           -->
+            <file name="../i2p-${Extended.Version}/installer/resources/geoip.txt" />
+            <file name="../i2p-${Extended.Version}/installer/resources/geoipv6.dat.gz" />
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/jetty-distribution-9.2.22.v20170606" />
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/apache-tomcat-8.5.23" />
+          <!--
+            <file name="../i2p-${Extended.Version}/apps/susidns/src/lib/jstl.jar" />
+           -->
+            <file name="../i2p-${Extended.Version}/apps/susidns/src/lib/standard.jar" />
+            <!-- anything added above, add in debian-tarball also -->
+        </delete>
+        <tar longfile="gnu" destfile="../${debian.tarball.name}" compression="bzip2">
+            <tarfileset dir="../i2p-${Extended.Version}" prefix="/i2p-${release.number}">
+                <include name="**/**" />
+                <exclude name="debian/**"/>
+                <exclude name="debian-alt/**"/>
+                <exclude name="**/*.sh"/>
+                <exclude name="installer/resources/geoip.txt"/>
+                <exclude name="installer/resources/geoipv6.dat.gz"/>
+                <exclude name="apps/jetty/jetty-distribution-*/**"/>
+                <exclude name="apps/jetty/apache-tomcat-*/**"/>
+              <!--
+                <exclude name="apps/susidns/src/lib/jstl.jar" />
+               -->
+                <exclude name="apps/susidns/src/lib/standard.jar" />
+                <!-- anything added above, add in debian-tarball also -->
+            </tarfileset>
+            <tarfileset dir="../i2p-${Extended.Version}" prefix="/i2p-${release.number}" filemode="755">
+                <exclude name="debian/**" />
+                <include name="**/*.sh" />
+            </tarfileset>
+        </tar>
+    </target>
+
+    <!-- stretch+, zesty+ -->
     <!-- same as debian-tarball but with a release tar.bz2 file name and tar prefix -->
-    <target name="debian-release-tarball" depends="getExtendedVersion">
-        <!-- this will use the monotonerc file in the current workspace -->
-        <fail message="This target cannot be used without Monotone! Use &quot;fakeroot debian/rules get-orig-source&quot; instead.">
-            <condition>
-                <not>
-                    <isset property="mtn.available" />
-                </not>
-            </condition>
-        </fail>
+    <target name="debian-release-tarball" depends="getExtendedVersion, failIfNoMtn">
         <property name="debian.tarball.name" value="i2p_${release.number}.orig.tar.bz2" />
         <echo message="Checking out fresh copy into ../i2p-${Extended.Version} for tarballing:" />
         <delete dir="../i2p-${Extended.Version}" />
@@ -2401,6 +2522,18 @@
             <fileset dir="../i2p-${Extended.Version}/installer/lib/" />
             <fileset dir="../i2p-${Extended.Version}/Slackware" />
             <fileset dir="../i2p-${Extended.Version}/_MTN" />
+            <fileset dir="../i2p-${Extended.Version}/.idea" />
+            <fileset dir="../i2p-${Extended.Version}/.tx" />
+            <file name="../i2p-${Extended.Version}/.mtn-ignore" />
+            <fileset dir="../i2p-${Extended.Version}/" includes="Docker*" />
+            <file name="../i2p-${Extended.Version}/Makefile.gcj" />
+            <!-- gradle files -->
+            <fileset dir="../i2p-${Extended.Version}/" includes="**/build.gradle" />
+            <fileset dir="../i2p-${Extended.Version}/gradle" />
+            <file name="../i2p-${Extended.Version}/gradlew" />
+            <file name="../i2p-${Extended.Version}/gradlew.bat" />
+            <file name="../i2p-${Extended.Version}/gradle.properties" />
+            <file name="../i2p-${Extended.Version}/settings.gradle" />
             <fileset dir="../i2p-${Extended.Version}/core/java/src/gnu/gettext" />
             <fileset dir="../i2p-${Extended.Version}/core/java/src/gnu/getopt" />
           <!--
@@ -2408,10 +2541,9 @@
            -->
             <file name="../i2p-${Extended.Version}/installer/resources/geoip.txt" />
             <file name="../i2p-${Extended.Version}/installer/resources/geoipv6.dat.gz" />
-            <fileset dir="../i2p-${Extended.Version}/apps/jetty/jetty-distribution-9.2.21.v20170120" />
-          <!--
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/jetty-distribution-9.2.22.v20170606" />
+            <fileset dir="../i2p-${Extended.Version}/apps/jetty/apache-tomcat-8.5.23" />
             <file name="../i2p-${Extended.Version}/apps/susidns/src/lib/jstl.jar" />
-           -->
             <file name="../i2p-${Extended.Version}/apps/susidns/src/lib/standard.jar" />
             <!-- anything added above, add in debian-tarball also -->
         </delete>
@@ -2424,9 +2556,8 @@
                 <exclude name="installer/resources/geoip.txt"/>
                 <exclude name="installer/resources/geoipv6.dat.gz"/>
                 <exclude name="apps/jetty/jetty-distribution-*/**"/>
-          <!--
+                <exclude name="apps/jetty/apache-tomcat-*/**"/>
                 <exclude name="apps/susidns/src/lib/jstl.jar" />
-           -->
                 <exclude name="apps/susidns/src/lib/standard.jar" />
                 <!-- anything added above, add in debian-tarball also -->
             </tarfileset>

@@ -28,26 +28,17 @@ import i2p.susi.util.ReadBuffer;
 /**
  * @author user
  */
-public class HTML implements Encoding {
+public class HTML extends Encoding {
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#getName()
-	 */
 	public String getName() {
 		return "HTML";
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#encode(byte[])
-	 */
 	public String encode(byte[] in) throws EncodingException {
-		// TODO Auto-generated method stub
-		return null;
+		throw new EncodingException("unsupported");
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#encode(java.lang.String)
-	 */
+	@Override
 	public String encode(String str) throws EncodingException
 	{
 		return  str.replace("&", "&amp;")  // must be first
@@ -56,37 +47,8 @@ public class HTML implements Encoding {
 			   .replaceAll( "\r{0,1}\n", "<br>\r\n" );
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(byte[])
-	 */
-	public ReadBuffer decode(byte[] in) throws DecodingException {
-		// TODO Auto-generated method stub
-		return null;
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(byte[], int, int)
-	 */
 	public ReadBuffer decode(byte[] in, int offset, int length)
 		throws DecodingException {
-		// TODO Auto-generated method stub
-		return null;
+		throw new DecodingException("unsupported");
 	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(java.lang.String)
-	 */
-	public ReadBuffer decode(String str) throws DecodingException {
-		// TODO Auto-generated method stub
-		return null;
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(i2p.susi.webmail.util.ReadBuffer)
-	 */
-	public ReadBuffer decode(ReadBuffer in) throws DecodingException {
-		// TODO Auto-generated method stub
-		return null;
-	}
-
 }

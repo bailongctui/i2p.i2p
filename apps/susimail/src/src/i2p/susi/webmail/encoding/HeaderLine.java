@@ -42,24 +42,15 @@ import net.i2p.data.DataHelper;
  *
  * @author susi
  */
-public class HeaderLine implements Encoding {
+public class HeaderLine extends Encoding {
 	public static final String NAME = "HEADERLINE";
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#getName()
-	 */
+
 	public String getName() {
 		return NAME;
 	}
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#encode(java.lang.String)
-	 */
-	public String encode(String text) throws EncodingException {
-		return encode( DataHelper.getUTF8(text) );
-	}
+
 	private static final int BUFSIZE = 2;
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#encode(byte[])
-	 */
+
 	public String encode( byte in[] ) throws EncodingException {
 		StringBuilder out = new StringBuilder();
 		int l = 0, buffered = 0, tmp[] = new int[BUFSIZE];
@@ -153,16 +144,6 @@ public class HeaderLine implements Encoding {
 		return out.toString();
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(java.lang.String)
-	 */
-	public ReadBuffer decode( byte in[] ) throws DecodingException {
-		return decode( in, 0, in.length );
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(java.lang.String)
-	 */
 	public ReadBuffer decode( byte in[], int offset, int length ) throws DecodingException {
 		ByteArrayOutputStream out = new ByteArrayOutputStream(4096);
 		int written = 0;
@@ -306,17 +287,6 @@ public class HeaderLine implements Encoding {
 		}
 			
 		return new ReadBuffer(out.toByteArray(), 0, out.size());
-	}
-
-	public ReadBuffer decode(String text) throws DecodingException {
-		return text != null ? decode( DataHelper.getUTF8(text) ) : null;
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi.webmail.encoding.Encoding#decode(i2p.susi.webmail.util.ReadBuffer)
-	 */
-	public ReadBuffer decode(ReadBuffer in) throws DecodingException {
-		return decode( in.content, in.offset, in.length );
 	}
 
 /*****

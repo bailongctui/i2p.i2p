@@ -26,6 +26,7 @@ package i2p.susi.webmail;
 import i2p.susi.debug.Debug;
 import i2p.susi.util.Config;
 import i2p.susi.util.Folder;
+import i2p.susi.util.Folder.SortOrder;
 import i2p.susi.util.ReadBuffer;
 import i2p.susi.webmail.Messages;
 import i2p.susi.webmail.encoding.DecodingException;
@@ -42,12 +43,14 @@ import java.io.FileFilter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.Serializable;
 import java.io.StringWriter;
 import java.io.UnsupportedEncodingException;
 import java.text.Collator;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.Enumeration;
@@ -69,8 +72,11 @@ import javax.servlet.http.HttpSessionBindingListener;
 
 import net.i2p.CoreVersion;
 import net.i2p.I2PAppContext;
+import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
 import net.i2p.servlet.RequestWrapper;
+import net.i2p.servlet.util.ServletUtil;
+import net.i2p.util.SecureFileOutputStream;
 import net.i2p.util.Translate;
 
 /**
@@ -115,6 +121,22 @@ public class WebMail extends HttpServlet
 	private static final String SMTP = "smtp";
 	
 	/*
+	 * GET params
+	 */
+	private static final String CUR_PAGE  = "page";
+
+	/*
+	 * hidden params
+	 */
+	private static final String SUSI_NONCE = "susiNonce";
+	private static final String B64UIDL = "b64uidl";
+	private static final String PREV_B64UIDL = "prevb64uidl";
+	private static final String NEXT_B64UIDL = "nextb64uidl";
+	private static final String PREV_PAGE_NUM = "prevpagenum";
+	private static final String NEXT_PAGE_NUM = "nextpagenum";
+	private static final String CURRENT_SORT = "currentsort";
+
+	/*
 	 * button names
 	 */
 	private static final String LOGOUT = "logout";
@@ -122,6 +144,7 @@ public class WebMail extends HttpServlet
 	private static final String SAVE = "save";
 	private static final String SAVE_AS = "saveas";
 	private static final String REFRESH = "refresh";
+	// also a GET param
 	private static final String CONFIGURE = "configure";
 	private static final String NEW = "new";
 	private static final String REPLY = "reply";
@@ -129,10 +152,10 @@ public class WebMail extends HttpServlet
 	private static final String FORWARD = "forward";
 	private static final String DELETE = "delete";
 	private static final String REALLYDELETE = "really_delete";
+	// also a GET param
 	private static final String SHOW = "show";
 	private static final String DOWNLOAD = "download";
 	private static final String RAW_ATTACHMENT = "att";
-	private static final String SUSI_NONCE = "susiNonce";
 	
 	private static final String MARKALL = "markall";
 	private static final String CLEAR = "clearselection";
@@ -162,11 +185,19 @@ public class WebMail extends HttpServlet
 	private static final String LIST = "list";
 	private static final String PREV = "prev";
 	private static final String NEXT = "next";
-	private static final String SORT_ID = "sort_id";
-	private static final String SORT_SENDER = "sort_sender";
-	private static final String SORT_SUBJECT = "sort_subject";
-	private static final String SORT_DATE = "sort_date";
-	private static final String SORT_SIZE = "sort_size";
+
+	// SORT is a GET or POST param, SORT_XX are the values, possibly prefixed by '-'
+	private static final String SORT = "sort";
+	private static final String SORT_ID = "id";
+	private static final String SORT_SENDER = "sender";
+	private static final String SORT_SUBJECT = "subject";
+	private static final String SORT_DATE = "date";
+	private static final String SORT_SIZE = "size";
+	private static final String SORT_DEFAULT = SORT_DATE;
+	// for XSS
+	private static final List<String> VALID_SORTS = Arrays.asList(new String[] {
+	                         SORT_ID, SORT_SENDER, SORT_SUBJECT, SORT_DATE, SORT_SIZE,
+	                         '-' + SORT_ID, '-' + SORT_SENDER, '-' + SORT_SUBJECT, '-' + SORT_DATE, '-' + SORT_SIZE });
 
 	private static final String CONFIG_TEXT = "config_text";
 
@@ -407,9 +438,10 @@ public class WebMail extends HttpServlet
 		Folder<String> folder;
 		String user, pass, host, error, info;
 		String replyTo, replyCC;
-		String subject, body, showUIDL;
-		public String sentMail;
+		String subject, body;
+		public StringBuilder sentMail;
 		public ArrayList<Attachment> attachments;
+		// This is only for multi-delete. Single-message delete is handled with P-R-G
 		public boolean reallyDelete;
 		String themePath, imgPath;
 		boolean isMobile;
@@ -474,6 +506,16 @@ public class WebMail extends HttpServlet
 				return nonces.contains(nonce);
 			}
 		}
+
+		/** @since 0.9.33 */
+		public void clearAttachments() {
+			if (attachments != null) {
+				for (Attachment a : attachments) {
+					a.deleteData();
+				}
+				attachments.clear();
+			}
+		}
 	}
 
 	/**
@@ -490,6 +532,10 @@ public class WebMail extends HttpServlet
 		   .append(name).append("\" value=\"").append(label).append('"');
 		if (name.equals(SEND) || name.equals(CANCEL) || name.equals(DELETE_ATTACHMENT) || name.equals(NEW_UPLOAD))
 			buf.append(" onclick=\"cancelPopup()\"");
+		// These are icons only now, via the CSS, so add a tooltip
+		if (name.equals(FIRSTPAGE) || name.equals(PREVPAGE) || name.equals(NEXTPAGE) || name.equals(LASTPAGE) ||
+		    name.equals(PREV) || name.equals(LIST) || name.equals(NEXT))
+			buf.append(" title=\"").append(label).append('"');
 		buf.append('>');
 		return buf.toString();
 	}
@@ -514,21 +560,22 @@ public class WebMail extends HttpServlet
 	 * @param label
 	 * @return the string
 	 */
-	private static String sortHeader( String name, String label, String imgPath, String currentName, Folder.SortOrder currentOrder)
+	private static String sortHeader(String name, String label, String imgPath,
+	                                 String currentName, SortOrder currentOrder, int page)
 	{
 		StringBuilder buf = new StringBuilder(128);
 		buf.append(label).append("&nbsp;&nbsp;");
-		if (name.equals(currentName) && currentOrder == Folder.SortOrder.UP) {
+		if (name.equals(currentName) && currentOrder == SortOrder.UP) {
 			buf.append("<img class=\"sort\" src=\"").append(imgPath).append("3up.png\" border=\"0\" alt=\"^\">\n");
 		} else {
-			buf.append("<a class=\"sort\" href=\"").append(myself).append('?').append(name).append("=up\">");
+			buf.append("<a class=\"sort\" href=\"").append(myself).append("?page=").append(page).append("&amp;sort=").append(name).append("\">");
 			buf.append("<img class=\"sort\" src=\"").append(imgPath).append("3up.png\" border=\"0\" alt=\"^\" style=\"opacity: 0.4;\">");
 			buf.append("</a>\n");
 		}
-		if (name.equals(currentName) && currentOrder == Folder.SortOrder.DOWN) {
+		if (name.equals(currentName) && currentOrder == SortOrder.DOWN) {
 			buf.append("<img class=\"sort\" src=\"").append(imgPath).append("3down.png\" border=\"0\" alt=\"v\">");
 		} else {
-			buf.append("<a class=\"sort\" href=\"").append(myself).append('?').append(name).append("=down\">");
+			buf.append("<a class=\"sort\" href=\"").append(myself).append("?page=").append(page).append("&amp;sort=-").append(name).append("\">");
 			buf.append("<img class=\"sort\" src=\"").append(imgPath).append("3down.png\" border=\"0\" alt=\"v\" style=\"opacity: 0.4;\">");
 			buf.append("</a>");
 		}
@@ -545,7 +592,7 @@ public class WebMail extends HttpServlet
 	private static boolean buttonPressed( RequestWrapper request, String key )
 	{
 		String value = request.getParameter( key );
-		return value != null && value.length() > 0;
+		return value != null && (value.length() > 0 || key.equals(CONFIGURE));
 	}
 	/**
 	 * recursively render all mail body parts
@@ -565,6 +612,7 @@ public class WebMail extends HttpServlet
 		
 		if( html ) {
 			out.println( "<!-- " );
+			out.println( "Debug: Showing Mail Part with hash code " + mailPart.hashCode());
 			out.println( "Debug: Mail Part headers follow");
 			for( int i = 0; i < mailPart.headerLines.length; i++ ) {
 				// fix Content-Type: multipart/alternative; boundary="----------8CDE39ECAF2633"
@@ -622,7 +670,7 @@ public class WebMail extends HttpServlet
 			if( showBody ) {			
 					String charset = mailPart.charset;
 					if( charset == null ) {
-						charset = "US-ASCII";
+						charset = "ISO-8859-1";
 						// don't show this in text mode which is used to include the mail in the reply or forward
 						if (html)
 							reason += _t("Warning: no charset found, fallback to US-ASCII.") + br;
@@ -668,21 +716,29 @@ public class WebMail extends HttpServlet
 					String type = mailPart.type;
 					if (type != null && type.startsWith("image/")) {
 						// we at least show images safely...
-						out.println("<img src=\"" + myself + "?" + RAW_ATTACHMENT + "=" +
-							 mailPart.hashCode() + "\">");
+						out.println("<img src=\"" + myself + '?' + RAW_ATTACHMENT + '=' +
+							 mailPart.hashCode() +
+							 "&amp;" + B64UIDL + '=' + Base64.encode(mailPart.uidl) + "\">");
 					} else if (type != null && (
 						// type list from snark
 						type.startsWith("audio/") || type.equals("application/ogg") ||
 					        type.startsWith("video/") ||
+						(type.startsWith("text/") && !type.equals("text/html")) ||
 						type.equals("application/zip") || type.equals("application/x-gtar") ||
 						type.equals("application/compress") || type.equals("application/gzip") ||
 						type.equals("application/x-7z-compressed") || type.equals("application/x-rar-compressed") ||
-						type.equals("application/x-tar") || type.equals("application/x-bzip2"))) {
-						out.println( "<a href=\"" + myself + "?" + RAW_ATTACHMENT + "=" +
-							 mailPart.hashCode() + "\">" + _t("Download attachment {0}", ident) + "</a>");
+						type.equals("application/x-tar") || type.equals("application/x-bzip2") ||
+						type.equals("application/pdf") || type.equals("application/x-bittorrent") ||
+						type.equals("application/pgp-signature"))) {
+						out.println( "<a href=\"" + myself + '?' + RAW_ATTACHMENT + '=' +
+							 mailPart.hashCode() +
+							 "&amp;" + B64UIDL + '=' + Base64.encode(mailPart.uidl) + "\">" +
+							 _t("Download attachment {0}", ident) + "</a>");
 					} else {
-						out.println( "<a target=\"_blank\" href=\"" + myself + "?" + DOWNLOAD + "=" +
-							 mailPart.hashCode() + "\">" + _t("Download attachment {0}", ident) + "</a>" +
+						out.println( "<a target=\"_blank\" href=\"" + myself + '?' + DOWNLOAD + '=' +
+							 mailPart.hashCode() +
+							 "&amp;" + B64UIDL + '=' + Base64.encode(mailPart.uidl) + "\">" +
+							 _t("Download attachment {0}", ident) + "</a>" +
 							 " (" + _t("File is packed into a zipfile for security reasons.") + ')');
 					}
 					out.println( "</div>" );
@@ -693,6 +749,11 @@ public class WebMail extends HttpServlet
 			}
 			if( html )
 				out.println( "</td></tr>" );
+		}
+		if( html ) {
+			out.println( "<!-- " );
+			out.println( "Debug: End of Mail Part with hash code " + mailPart.hashCode());
+			out.println( "-->" );
 		}
 	}
 	/**
@@ -815,8 +876,8 @@ public class WebMail extends HttpServlet
 						sessionObject.folder.addSorter( SORT_DATE, new DateSorter( sessionObject.mailCache ) );
 						sessionObject.folder.addSorter( SORT_SIZE, new SizeSorter( sessionObject.mailCache ) );
 						// reverse sort, latest mail first
-						sessionObject.folder.setSortingDirection(Folder.SortOrder.UP);
-						sessionObject.folder.sortBy(SORT_DATE);
+						sessionObject.folder.setSortingDirection(SortOrder.UP);
+						sessionObject.folder.sortBy(SORT_DEFAULT);
 						sessionObject.reallyDelete = false;
 						if (offline)
 							Debug.debug(Debug.DEBUG, "OFFLINE MODE");
@@ -892,10 +953,22 @@ public class WebMail extends HttpServlet
 			// We have to make sure to get the state right even if
 			// the user hit the back button previously
 			if( buttonPressed( request, SEND ) ) {
-				if( sendMail( sessionObject, request ) )
+				if (sendMail(sessionObject, request)) {
+					// If we have a reference UIDL, go back to that
+					if (request.getParameter(B64UIDL) != null)
+						sessionObject.state = STATE_SHOW;
+					else
+						sessionObject.state = STATE_LIST;
+				}
+			} else if (buttonPressed(request, CANCEL)) {
+				// If we have a reference UIDL, go back to that
+				if (request.getParameter(B64UIDL) != null)
+					sessionObject.state = STATE_SHOW;
+				else
 					sessionObject.state = STATE_LIST;
-			} else if (buttonPressed( request, CANCEL ) ||
-			    buttonPressed( request, SHOW )  ||       // A param, not a button, but we could be lost
+				sessionObject.sentMail = null;	
+				sessionObject.clearAttachments();
+			} else if (buttonPressed(request, SHOW)  ||       // A param, not a button, but we could be lost
 			    buttonPressed( request, PREVPAGE ) ||    // All these buttons are not shown but we could be lost
 			    buttonPressed( request, NEXTPAGE ) ||
 			    buttonPressed( request, FIRSTPAGE ) ||
@@ -904,33 +977,28 @@ public class WebMail extends HttpServlet
 			    buttonPressed( request, MARKALL ) ||
 			    buttonPressed( request, CLEAR ) ||
 			    buttonPressed( request, INVERT ) ||
-			    buttonPressed( request, SORT_ID ) ||
-			    buttonPressed( request, SORT_SENDER ) ||
-			    buttonPressed( request, SORT_SUBJECT ) ||
-			    buttonPressed( request, SORT_DATE ) ||
-			    buttonPressed( request, SORT_SIZE ) ||
+			    buttonPressed( request, SORT ) ||
 			    buttonPressed( request, REFRESH ) ||
 			    buttonPressed( request, LIST )) {
 				sessionObject.state = STATE_LIST;
 				sessionObject.sentMail = null;	
-				if( sessionObject.attachments != null )
-					sessionObject.attachments.clear();
+				sessionObject.clearAttachments();
 			} else if (buttonPressed( request, PREV ) ||     // All these buttons are not shown but we could be lost
 			    buttonPressed( request, NEXT )  ||
 			    buttonPressed( request, DELETE )) {
 				sessionObject.state = STATE_SHOW;
 				sessionObject.sentMail = null;	
-				if( sessionObject.attachments != null )
-					sessionObject.attachments.clear();
+				sessionObject.clearAttachments();
 			}
 		}
 		/*
 		 * message dialog or config
+		 * Do not go through here if we were originally in NEW (handled above)
 		 */
-		if((sessionObject.state == STATE_SHOW || sessionObject.state == STATE_CONFIG) && isPOST ) {
+		else if ((sessionObject.state == STATE_SHOW || sessionObject.state == STATE_CONFIG) && isPOST ) {
 			if( buttonPressed( request, LIST ) ) { 
 				sessionObject.state = STATE_LIST;
-			} else if (buttonPressed( request, CANCEL ) ||
+			} else if (
 			    buttonPressed( request, PREVPAGE ) ||    // All these buttons are not shown but we could be lost
 			    buttonPressed( request, NEXTPAGE ) ||
 			    buttonPressed( request, FIRSTPAGE ) ||
@@ -939,11 +1007,7 @@ public class WebMail extends HttpServlet
 			    buttonPressed( request, MARKALL ) ||
 			    buttonPressed( request, CLEAR ) ||
 			    buttonPressed( request, INVERT ) ||
-			    buttonPressed( request, SORT_ID ) ||
-			    buttonPressed( request, SORT_SENDER ) ||
-			    buttonPressed( request, SORT_SUBJECT ) ||
-			    buttonPressed( request, SORT_DATE ) ||
-			    buttonPressed( request, SORT_SIZE ) ||
+			    buttonPressed( request, SORT ) ||
 			    buttonPressed( request, REFRESH )) {
 				sessionObject.state = STATE_LIST;
 			}
@@ -993,14 +1057,14 @@ public class WebMail extends HttpServlet
 				if( sessionObject.state == STATE_LIST ) {
 					// these buttons are now hidden on the folder page,
 					// but the idea is to use the first checked message
-					List<Integer> items = getCheckedItems(request);
+					List<String> items = getCheckedItems(request);
 					if (!items.isEmpty()) {
-						int pos = items.get(0).intValue();
-						uidl = sessionObject.folder.getElementAtPosXonCurrentPage( pos );
+						String b64UIDL = items.get(0);
+						// This is the I2P Base64, not the encoder
+						uidl = Base64.decodeToString(b64UIDL);
 					}
-				}
-				else {
-					uidl = sessionObject.showUIDL;
+				} else {
+					uidl = Base64.decodeToString(request.getParameter(B64UIDL));
 				}
 				
 				if( uidl != null ) {
@@ -1110,20 +1174,11 @@ public class WebMail extends HttpServlet
 			 */
 			String show = request.getParameter( SHOW );
 			if( show != null && show.length() > 0 ) {
-				try {
-
-					int id = Integer.parseInt( show );
-					
-					if( id >= 0 && id < sessionObject.folder.getPageSize() ) {
-						String uidl = sessionObject.folder.getElementAtPosXonCurrentPage( id );
-						if( uidl != null ) {
-							sessionObject.state = STATE_SHOW;
-							sessionObject.showUIDL = uidl;
-						}
-					}
-				}
-				catch( NumberFormatException nfe )
-				{
+				// This is the I2P Base64, not the encoder
+				String uidl = Base64.decodeToString(show);
+				if(uidl != null) {
+					sessionObject.state = STATE_SHOW;
+				} else {
 					sessionObject.error += _t("Message id not valid.") + '\n';
 				}
 			}
@@ -1133,17 +1188,15 @@ public class WebMail extends HttpServlet
 	/**
 	 * Returns e.g. 3,5 for ?check3=1&check5=1 (or POST equivalent)
 	 * @param request
-	 * @return non-null
+	 * @return non-null List of Base64 UIDLs, or attachment numbers as Strings
 	 */
-	private static List<Integer> getCheckedItems(RequestWrapper request) {
-		List<Integer> rv = new ArrayList<Integer>(8);
+	private static List<String> getCheckedItems(RequestWrapper request) {
+		List<String> rv = new ArrayList<String>(8);
 		for( Enumeration<String> e = request.getParameterNames(); e.hasMoreElements(); ) {
 			String parameter = e.nextElement();
 			if( parameter.startsWith( "check" ) && request.getParameter( parameter ).equals("1")) {
-				String number = parameter.substring( 5 );
-				try {
-					rv.add(Integer.valueOf(number));
-				} catch( NumberFormatException nfe ) {}
+				String item = parameter.substring(5);
+				rv.add(item);
 			}
 		}
 		return rv;
@@ -1156,6 +1209,7 @@ public class WebMail extends HttpServlet
 	private static void processGenericButtons(SessionObject sessionObject, RequestWrapper request)
 	{
 		// these two buttons are only on the folder view now
+/**** All RELOAD buttons are commented out
 		if( buttonPressed( request, RELOAD ) ) {
 			Config.reloadConfiguration();
 			int oldPageSize = sessionObject.folder.getPageSize();
@@ -1164,6 +1218,7 @@ public class WebMail extends HttpServlet
 				sessionObject.folder.setPageSize( pageSize );
 			sessionObject.info = _t("Configuration reloaded");
 		}
+****/
 		if( buttonPressed( request, REFRESH ) ) {
 			POP3MailBox mailbox = sessionObject.mailbox;
 			if (mailbox == null) {
@@ -1204,54 +1259,60 @@ public class WebMail extends HttpServlet
 			if( i != -1 )
 				filename = filename.substring( i + 1 );
 			if( filename != null && filename.length() > 0 ) {
-				InputStream in = request.getInputStream( NEW_FILENAME );
-				int l;
+				InputStream in = null;
+				OutputStream out = null;
+				I2PAppContext ctx = I2PAppContext.getGlobalContext();
+				File f = new File(ctx.getTempDir(), "susimail-attachment-" + ctx.random().nextLong());
 				try {
-					l = in.available();
-					if( l > 0 ) {
-						byte buf[] = new byte[l];
-						in.read( buf );
-						String contentType = request.getContentType( NEW_FILENAME );
-						Encoding encoding;
-						String encodeTo;
-						if( contentType.toLowerCase(Locale.US).startsWith( "text/" ) )
-							encodeTo = "quoted-printable";
-						else
-							encodeTo = "base64";
-						encoding = EncodingFactory.getEncoding( encodeTo );
-						try {
-							if( encoding != null ) {
-								String data = encoding.encode(buf);
-								if( sessionObject.attachments == null )
-									sessionObject.attachments = new ArrayList<Attachment>();
-								sessionObject.attachments.add(
-									new Attachment(filename, contentType, encodeTo, data)
-								);
-							}
-							else {
-								sessionObject.error += _t("No Encoding found for {0}", encodeTo) + '\n';
-							}
-						}
-						catch (EncodingException e1) {
-							sessionObject.error += _t("Could not encode data: {0}", e1.getMessage());
-						}
+				        in = request.getInputStream( NEW_FILENAME );
+					if(in == null)
+						throw new IOException("no stream");
+					out = new SecureFileOutputStream(f);
+					DataHelper.copy(in, out);
+					String contentType = request.getContentType( NEW_FILENAME );
+					String encodeTo;
+					String ctlc = contentType.toLowerCase(Locale.US);
+					if (ctlc.startsWith("text/")) {
+						encodeTo = "quoted-printable";
+						// Is this a better guess than the platform encoding?
+						// Either is a better guess than letting the receiver
+						// interpret it as ISO-8859-1
+						if (!ctlc.contains("charset="))
+							contentType += "; charset=\"utf-8\"";
+					} else {
+						encodeTo = "base64";
 					}
-				}
-				catch (IOException e) {
+					Encoding encoding = EncodingFactory.getEncoding(encodeTo);
+					if (encoding != null) {
+						if (sessionObject.attachments == null)
+							sessionObject.attachments = new ArrayList<Attachment>();
+						sessionObject.attachments.add(
+							new Attachment(filename, contentType, encodeTo, f)
+						);
+					} else {
+						sessionObject.error += _t("No Encoding found for {0}", encodeTo) + '\n';
+					}
+				} catch (IOException e) {
 					sessionObject.error += _t("Error reading uploaded file: {0}", e.getMessage()) + '\n';
+					f.delete();
+				} finally {
+					if (in != null) try { in.close(); } catch (IOException ioe) {}
+					if (out != null) try { out.close(); } catch (IOException ioe) {}
 				}
 			}
 		}
 		else if( sessionObject.attachments != null && buttonPressed( request, DELETE_ATTACHMENT ) ) {
-			for (Integer item : getCheckedItems(request)) {
-				int n = item.intValue();
-				for( int i = 0; i < sessionObject.attachments.size(); i++ ) {
-					Attachment attachment = sessionObject.attachments.get(i);
-					if( attachment.hashCode() == n ) {
-						sessionObject.attachments.remove( i );
-						break;
+			for (String item : getCheckedItems(request)) {
+				try {
+					int n = Integer.parseInt(item);
+					for( int i = 0; i < sessionObject.attachments.size(); i++ ) {
+						Attachment attachment = sessionObject.attachments.get(i);
+						if( attachment.hashCode() == n ) {
+							sessionObject.attachments.remove( i );
+							break;
+						}
 					}
-				}
+				} catch (NumberFormatException nfe) {}
 			}			
 		}
 	}
@@ -1260,42 +1321,38 @@ public class WebMail extends HttpServlet
 	 * process buttons of message view
 	 * @param sessionObject
 	 * @param request
+	 * @return the next UIDL to see (if PREV/NEXT pushed), or null (if REALLYDELETE pushed), or showUIDL,
+	 *         or "delete" (if DELETE pushed)
 	 */
-	private static void processMessageButtons(SessionObject sessionObject, RequestWrapper request)
+	private static String processMessageButtons(SessionObject sessionObject, String showUIDL, RequestWrapper request)
 	{
 		if( buttonPressed( request, PREV ) ) {
-			String uidl = sessionObject.folder.getPreviousElement( sessionObject.showUIDL );
-			if( uidl != null )
-				sessionObject.showUIDL = uidl;
+			String b64UIDL = request.getParameter(PREV_B64UIDL);
+			String uidl = Base64.decodeToString(b64UIDL);
+			if(uidl == null)
+				sessionObject.state = STATE_LIST;
+			return uidl;
 		}
 		if( buttonPressed( request, NEXT ) ) {
-			String uidl = sessionObject.folder.getNextElement( sessionObject.showUIDL );
-			if( uidl != null )
-				sessionObject.showUIDL = uidl;
+			String b64UIDL = request.getParameter(NEXT_B64UIDL);
+			String uidl = Base64.decodeToString(b64UIDL);
+			if(uidl == null)
+				sessionObject.state = STATE_LIST;
+			return uidl;
 		}
 		
-		sessionObject.reallyDelete = buttonPressed( request, DELETE );
-		
+		if (buttonPressed(request, DELETE)) {
+			// processRequest() will P-R-G to &delete=1
+			// We do not keep this indication in the session object.
+			return DELETE;
+		}
 		if( buttonPressed( request, REALLYDELETE ) ) {
-			/*
-			 * first find the next message
-			 */
-			String nextUIDL = sessionObject.folder.getNextElement( sessionObject.showUIDL );
-			if( nextUIDL == null ) {
-				/*
-				 * nothing found? then look for the previous one
-				 */
-				nextUIDL = sessionObject.folder.getPreviousElement( sessionObject.showUIDL );
-				if( nextUIDL == null )
-					/*
-					 * still nothing found? then this was the last message, so go back to the folder
-					 */
-					sessionObject.state = STATE_LIST;
-			}
-			sessionObject.mailCache.delete( sessionObject.showUIDL );
-			sessionObject.folder.removeElement(sessionObject.showUIDL);
-			sessionObject.showUIDL = nextUIDL;
+			sessionObject.state = STATE_LIST;
+			sessionObject.mailCache.delete(showUIDL);
+			sessionObject.folder.removeElement(showUIDL);
+			return null;
 		}
+		return showUIDL;
 	}		
 
 	/**
@@ -1304,18 +1361,19 @@ public class WebMail extends HttpServlet
 	 * @param request
 	 * @return If true, we sent an attachment or 404, do not send any other response
 	 */
-	private static boolean processDownloadLink(SessionObject sessionObject, RequestWrapper request, HttpServletResponse response)
+	private static boolean processDownloadLink(SessionObject sessionObject, String showUIDL,
+	                                           RequestWrapper request, HttpServletResponse response)
 	{
 		String str = request.getParameter(DOWNLOAD);
 		boolean isRaw = false;
 		if (str == null) {
 			str = request.getParameter(RAW_ATTACHMENT);
-			isRaw = str != null;
+			isRaw = true;
 		}       	
 		if( str != null ) {
 			try {
 				int hashCode = Integer.parseInt( str );
-				Mail mail = sessionObject.mailCache.getMail( sessionObject.showUIDL, MailCache.FetchMode.ALL );
+				Mail mail = sessionObject.mailCache.getMail(showUIDL, MailCache.FetchMode.ALL);
 				MailPart part = mail != null ? getMailPartFromHashCode( mail.getPart(), hashCode ) : null;
 				if( part != null ) {
 					if (sendAttachment(sessionObject, part, response, isRaw))
@@ -1323,14 +1381,12 @@ public class WebMail extends HttpServlet
 				}
 			} catch( NumberFormatException nfe ) {}
 			// error if we get here
-			sessionObject.error += _t("Attachment not found.");
-			if (isRaw) {
-				try {
-					response.sendError(404, _t("Attachment not found."));
-				} catch (IOException ioe) {}
-			}
+			try {
+				response.sendError(404, _t("Attachment not found."));
+			} catch (IOException ioe) {}
+			return true;
 		}
-		return isRaw;
+		return false;
 	}
 
 
@@ -1342,12 +1398,13 @@ public class WebMail extends HttpServlet
 	 * @return If true, we sent the file or 404, do not send any other response
 	 * @since 0.9.18
 	 */
-	private static boolean processSaveAsLink(SessionObject sessionObject, RequestWrapper request, HttpServletResponse response)
+	private static boolean processSaveAsLink(SessionObject sessionObject, String showUIDL,
+	                                         RequestWrapper request, HttpServletResponse response)
 	{
 		String str = request.getParameter(SAVE_AS);
 		if( str == null )
 			return false;
-		Mail mail = sessionObject.mailCache.getMail( sessionObject.showUIDL, MailCache.FetchMode.ALL );
+		Mail mail = sessionObject.mailCache.getMail(showUIDL, MailCache.FetchMode.ALL);
 		if( mail != null ) {
 			if (sendMailSaveAs(sessionObject, mail, response))
 				return true;
@@ -1361,6 +1418,8 @@ public class WebMail extends HttpServlet
 	}
 
 	/**
+	 * Recursive.
+	 * FIXME can't be bookmarked.
 	 * @param hashCode
 	 * @return the part or null
 	 */
@@ -1385,9 +1444,11 @@ public class WebMail extends HttpServlet
 	/**
 	 * process buttons of folder view
 	 * @param sessionObject
+	 * @param page the current page
 	 * @param request
+	 * @param return the new page
 	 */
-	private static void processFolderButtons(SessionObject sessionObject, RequestWrapper request)
+	private static int processFolderButtons(SessionObject sessionObject, int page, RequestWrapper request)
 	{
 		/*
 		 * process paging buttons
@@ -1404,35 +1465,48 @@ public class WebMail extends HttpServlet
 			}
 		}
 		if( buttonPressed( request, PREVPAGE ) ) {
-			sessionObject.pageChanged = true;
-			sessionObject.folder.previousPage();
+			String sp = request.getParameter(PREV_PAGE_NUM);
+			if (sp != null) {
+				try {
+					page = Integer.parseInt(sp);
+					sessionObject.pageChanged = true;
+				} catch (NumberFormatException nfe) {}
+			}
 		}
 		else if( buttonPressed( request, NEXTPAGE ) ) {
-			sessionObject.pageChanged = true;
-			sessionObject.folder.nextPage();
+			String sp = request.getParameter(NEXT_PAGE_NUM);
+			if (sp != null) {
+				try {
+					page = Integer.parseInt(sp);
+					sessionObject.pageChanged = true;
+				} catch (NumberFormatException nfe) {}
+			}
 		}
 		else if( buttonPressed( request, FIRSTPAGE ) ) {
 			sessionObject.pageChanged = true;
-			sessionObject.folder.firstPage();
+			page = 1;
 		}
 		else if( buttonPressed( request, LASTPAGE ) ) {
 			sessionObject.pageChanged = true;
-			sessionObject.folder.lastPage();
+			page = sessionObject.folder.getPages();
 		}
-		else if( buttonPressed( request, DELETE ) ) {
+
+		if (buttonPressed(request, DELETE)) {
 			int m = getCheckedItems(request).size();
-			if (m > 0)
+			if (m > 0) {
 				sessionObject.reallyDelete = true;
-			else
+			} else {
+				sessionObject.reallyDelete = false;
 				sessionObject.error += _t("No messages marked for deletion.") + '\n';
+			}
 		}
 		else {
 			if( buttonPressed( request, REALLYDELETE ) ) {
 				List<String> toDelete = new ArrayList<String>();
-				for (Integer item : getCheckedItems(request)) {
-					int n = item.intValue();
-					String uidl = sessionObject.folder.getElementAtPosXonCurrentPage( n );
-					if( uidl != null )
+				for (String b64UIDL : getCheckedItems(request)) {
+					// This is the I2P Base64, not the encoder
+					String uidl = Base64.decodeToString(b64UIDL);
+					if (uidl != null)
 						toDelete.add(uidl);
 				}
 				int numberDeleted = toDelete.size();
@@ -1450,6 +1524,7 @@ public class WebMail extends HttpServlet
 		sessionObject.markAll = buttonPressed( request, MARKALL );
 		sessionObject.clear = buttonPressed( request, CLEAR );
 		sessionObject.invert = buttonPressed( request, INVERT );
+		return page;
 	}
 
 	/*
@@ -1457,41 +1532,39 @@ public class WebMail extends HttpServlet
 	 */
 	private static void processSortingButtons(SessionObject sessionObject, RequestWrapper request)
 	{
-		//processSortingButton( sessionObject, request, SORT_ID );
-		processSortingButton( sessionObject, request, SORT_SENDER );
-		processSortingButton( sessionObject, request, SORT_SUBJECT );
-		processSortingButton( sessionObject, request, SORT_DATE );
-		processSortingButton( sessionObject, request, SORT_SIZE );		
-	}
-
-	/**
-	 * @param sessionObject
-	 * @param request
-	 * @param sort_id
-	 */
-	private static void processSortingButton(SessionObject sessionObject, RequestWrapper request, String sort_id )
-	{
-		String str = request.getParameter( sort_id );
-		if( str != null ) {
-			if( str.equalsIgnoreCase("up")) {
-				sessionObject.folder.setSortingDirection(Folder.SortOrder.UP);
-				sessionObject.folder.sortBy( sort_id );
-			} else 	if( str.equalsIgnoreCase("down")) {
-				sessionObject.folder.setSortingDirection(Folder.SortOrder.DOWN);
-				sessionObject.folder.sortBy( sort_id );
+		String str = request.getParameter(SORT);
+		if (str != null && VALID_SORTS.contains(str)) {
+			SortOrder order;
+			if (str.startsWith("-")) {
+				order = SortOrder.DOWN;
+				str = str.substring(1);
+			} else {
+				order = SortOrder.UP;
 			}
+			// TODO don't store in session
+			sessionObject.folder.setSortingDirection(order);
+			sessionObject.folder.sortBy(str);
 		}
 	}
 
 	/*
 	 * process config buttons, both entering and exiting
+	 * @param isPOST disallow button pushes if false
+	 * @return true if we should go to config page
 	 */
-	private static void processConfigButtons(SessionObject sessionObject, RequestWrapper request) {
+	private static boolean processConfigButtons(SessionObject sessionObject, RequestWrapper request, boolean isPOST) {
+		if (buttonPressed(request, CONFIGURE)) {
+			sessionObject.state = STATE_CONFIG;
+			return true;
+		}
+		// If no config text, we can't be on the config page,
+		// and we don't want to process the CANCEL button which
+		// is also on the compose page.
+		if (!isPOST || request.getParameter(CONFIG_TEXT) == null)
+			return false;
 		if (buttonPressed(request, SAVE)) {
 			try {
 				String raw = request.getParameter(CONFIG_TEXT);
-				if (raw == null)
-					return;
 				Properties props = new Properties();
 				DataHelper.loadProps(props, new ByteArrayInputStream(DataHelper.getUTF8(raw)));
 				// for safety, disallow changing host via UI
@@ -1542,9 +1615,8 @@ public class WebMail extends HttpServlet
 			}
 		} else if (buttonPressed(request, CANCEL)) {
 			sessionObject.state = (sessionObject.folder != null) ? STATE_LIST : STATE_AUTH;
-		} else if (buttonPressed(request, CONFIGURE)) {
-			sessionObject.state = STATE_CONFIG;
 		}
+		return false;
 	}
 
 	/**
@@ -1567,6 +1639,7 @@ public class WebMail extends HttpServlet
 	}
 
     /**
+     * Either mobile or text browser
      * Copied from net.i2p.router.web.CSSHelper
      * @param ua null ok
      * @since 0.9.7
@@ -1574,31 +1647,9 @@ public class WebMail extends HttpServlet
     private static boolean isMobile(String ua) {
         if (ua == null)
             return false;
-        return
-                               // text
-                              (ua.startsWith("Lynx") || ua.startsWith("w3m") ||
-                               ua.startsWith("ELinks") || ua.startsWith("Links") ||
-                               ua.startsWith("Dillo") || ua.startsWith("Emacs-w3m") ||
-                               // mobile
-                               // http://www.zytrax.com/tech/web/mobile_ids.html
-                               // Android tablet UAs don't have "Mobile" in them
-                               (ua.contains("Android") && ua.contains("Mobile")) ||
-                               ua.contains("iPhone") ||
-                               ua.contains("iPod") || ua.contains("iPad") ||
-                               ua.contains("Kindle") || ua.contains("Mobile") ||
-                               ua.contains("Nintendo Wii") ||
-                               ua.contains("Opera Mini") || ua.contains("Opera Mobi") ||
-                               ua.contains("Palm") ||
-                               ua.contains("PLAYSTATION") || ua.contains("Playstation") ||
-                               ua.contains("Profile/MIDP-") || ua.contains("SymbianOS") ||
-                               ua.contains("Windows CE") || ua.contains("Windows Phone") ||
-                               ua.startsWith("BlackBerry") || ua.startsWith("DoCoMo") ||
-                               ua.startsWith("Nokia") || ua.startsWith("OPWV-SDK") ||
-                               ua.startsWith("MOT-") || ua.startsWith("SAMSUNG-") ||
-                               ua.startsWith("nook") || ua.startsWith("SCH-") ||
-                               ua.startsWith("SEC-") || ua.startsWith("SonyEricsson") ||
-                               ua.startsWith("Vodafone"));
+        return ServletUtil.isSmallBrowser(ua);
     }
+
 	/**
 	 * The entry point for all web page loads
 	 * 
@@ -1661,16 +1712,22 @@ public class WebMail extends HttpServlet
 			sessionObject.isMobile = isMobile;
 			
 			if (isPOST) {
-				String nonce = request.getParameter(SUSI_NONCE);
-				if (nonce == null || !sessionObject.isValidNonce(nonce)) {
-					// These two strings are already in the router console FormHandler,
-					// so translate with that bundle.
-					sessionObject.error = consoleGetString(
-						"Invalid form submission, probably because you used the 'back' or 'reload' button on your browser. Please resubmit.",
-						ctx)
-						+ '\n' +
-						consoleGetString("If the problem persists, verify that you have cookies enabled in your browser.",
-						ctx);
+				try {
+					String nonce = request.getParameter(SUSI_NONCE);
+					if (nonce == null || !sessionObject.isValidNonce(nonce)) {
+						// These two strings are already in the router console FormHandler,
+						// so translate with that bundle.
+						sessionObject.error = consoleGetString(
+							"Invalid form submission, probably because you used the 'back' or 'reload' button on your browser. Please resubmit.",
+							ctx)
+							+ '\n' +
+							consoleGetString("If the problem persists, verify that you have cookies enabled in your browser.",
+							ctx);
+						isPOST = false;
+					}
+				} catch (IllegalStateException ise) {
+					// too big, can't get any parameters
+					sessionObject.error += ise.getMessage() + '\n';
 					isPOST = false;
 				}
 			}
@@ -1682,8 +1739,14 @@ public class WebMail extends HttpServlet
 		
 			int oldState = sessionObject.state;
 			processStateChangeButtons( sessionObject, request, isPOST );
-			if (isPOST)
-				processConfigButtons( sessionObject, request );
+			if (processConfigButtons(sessionObject, request, isPOST)) {
+				if (isPOST) {
+					// P-R-G
+					String q = '?' + CONFIGURE;
+					sendRedirect(httpRequest, response, q);
+					return;
+				}
+			}
 			int newState = sessionObject.state;
 			if (oldState != newState)
 				Debug.debug(Debug.DEBUG, "STATE CHANGE from " + oldState + " to " + newState);
@@ -1701,8 +1764,32 @@ public class WebMail extends HttpServlet
 			}
 			
 			if( sessionObject.state == STATE_LIST ) {
-				if (isPOST)
-					processFolderButtons( sessionObject, request );
+				if (isPOST) {
+					int page = 1;
+					String sp = request.getParameter(CUR_PAGE);
+					if (sp != null) {
+						try {
+							page = Integer.parseInt(sp);
+						} catch (NumberFormatException nfe) {}
+					}
+					int newPage = processFolderButtons(sessionObject, page, request);
+					// LIST is from SHOW page, SEND and CANCEL are from NEW page
+					// OFFLINE and LOGIN from login page
+					// TODO - REFRESH on list page
+					if (newPage != page || buttonPressed(request, LIST) ||
+					    buttonPressed(request, SEND) || buttonPressed(request, CANCEL) ||
+					    buttonPressed(request, LOGIN) || buttonPressed(request, OFFLINE)) {
+						// P-R-G
+						String q = '?' + CUR_PAGE + '=' + newPage;
+						// CURRENT_SORT is only in page POSTs
+						String str = request.getParameter(CURRENT_SORT);
+						if (str != null && !str.equals(SORT_DEFAULT) && VALID_SORTS.contains(str))
+							q += "&sort=" + str;
+						sendRedirect(httpRequest, response, q);
+						return;
+					}
+				}
+				// sort buttons are GETs
 				processSortingButtons( sessionObject, request );
 				for( Iterator<String> it = sessionObject.folder.currentPageIterator(); it != null && it.hasNext(); ) {
 					String uidl = it.next();
@@ -1714,40 +1801,63 @@ public class WebMail extends HttpServlet
 				}
 			}
 			
+			// ?show= links - this forces STATE_SHOW
+			String b64UIDL = request.getParameter(SHOW);
+			// attachment links, images, next/prev/delete on show form
+			if (b64UIDL == null)
+				b64UIDL = request.getParameter(B64UIDL);
+			String showUIDL = Base64.decodeToString(b64UIDL);
 			if( sessionObject.state == STATE_SHOW ) {
-				if (isPOST)
-					processMessageButtons( sessionObject, request );
-				// ?download=nnn link should be valid in any state
-				// but depends on current UIDL
-				if (processDownloadLink(sessionObject, request, response)) {
+				if (isPOST) {
+					String newShowUIDL = processMessageButtons(sessionObject, showUIDL, request);
+					// SEND and CANCEL are from NEW page
+					if (newShowUIDL != null &&
+					    (!newShowUIDL.equals(showUIDL) ||
+					     buttonPressed(request, SEND) || buttonPressed(request, CANCEL))) {
+						// P-R-G
+						String q;
+						if (newShowUIDL.equals(DELETE))
+							q = '?' + DELETE + "=1&" + SHOW + '=' + Base64.encode(showUIDL);
+						else
+							q = '?' + SHOW + '=' + Base64.encode(newShowUIDL);
+						sendRedirect(httpRequest, response, q);
+						return;
+					}
+				}
+				// ?download=nnn&amp;b64uidl link (same for ?att) should be valid in any state
+				if (processDownloadLink(sessionObject, showUIDL, request, response)) {
 					// download or raw view sent, or 404
 					return;
 				}
-				if (isPOST && processSaveAsLink(sessionObject, request, response)) {
-					// download or sent, or 404
+				if (isPOST && processSaveAsLink(sessionObject, showUIDL, request, response)) {
+					// download sent, or 404
 					return;
 				}
 				// If the last message has just been deleted then
 				// sessionObject.state = STATE_LIST and
 				// sessionObject.showUIDL = null
-				if ( sessionObject.showUIDL != null ) {
-					Mail mail = sessionObject.mailCache.getMail( sessionObject.showUIDL, MailCache.FetchMode.ALL );
+				if (showUIDL != null) {
+					Mail mail = sessionObject.mailCache.getMail(showUIDL, MailCache.FetchMode.ALL);
 					if( mail != null && mail.error.length() > 0 ) {
 						sessionObject.error += mail.error;
 						mail.error = "";
 					}
+				} else {
+					// can't SHOW without a UIDL
+					sessionObject.state = STATE_LIST;
 				}
 			}
 			
 			/*
 			 * update folder content
 			 */
+			Folder<String> folder = sessionObject.folder;
 			if( sessionObject.state == STATE_LIST ) {
 				// get through cache so we have the disk-only ones too
 				String[] uidls = sessionObject.mailCache.getUIDLs();
 				if (uidls != null) {
 					// TODO why every time?
-					sessionObject.folder.setElements(uidls);
+					folder.setElements(uidls);
 				}
 			}
 
@@ -1762,13 +1872,17 @@ public class WebMail extends HttpServlet
 					// mailbox.getNumMails() forces a connection, don't use it
 					// Not only does it slow things down, but a failure causes all our messages to "vanish"
 					//subtitle = ngettext("1 Message", "{0} Messages", sessionObject.mailbox.getNumMails());
-					subtitle = ngettext("1 Message", "{0} Messages", sessionObject.folder.getSize());
+					subtitle = ngettext("1 Message", "{0} Messages", folder.getSize());
 				} else if( sessionObject.state == STATE_SHOW ) {
-					Mail mail = sessionObject.mailCache.getMail(sessionObject.showUIDL, MailCache.FetchMode.HEADER);
-					if (mail != null && mail.shortSubject != null)
-						subtitle = mail.shortSubject; // already HTML encoded
-					else
-						subtitle = _t("Show Message");
+					Mail mail = showUIDL != null ? sessionObject.mailCache.getMail(showUIDL, MailCache.FetchMode.HEADER) : null;
+					if (mail != null && mail.hasHeader()) {
+						if (mail.shortSubject != null)
+							subtitle = mail.shortSubject; // already HTML encoded
+						else
+							subtitle = _t("Show Message");
+					} else {
+						subtitle = _t("Message not found.");
+					}
 				} else if( sessionObject.state == STATE_NEW ) {
 					subtitle = _t("New Message");
 				} else if( sessionObject.state == STATE_CONFIG ) {
@@ -1812,7 +1926,29 @@ public class WebMail extends HttpServlet
 					"<div class=\"page\"><div class=\"header\"><img class=\"header\" src=\"" + sessionObject.imgPath + "susimail.png\" alt=\"Susimail\"></div>\n" +
 					"<form method=\"POST\" enctype=\"multipart/form-data\" action=\"" + myself + "\" accept-charset=\"UTF-8\">\n" +
 					"<input type=\"hidden\" name=\"" + SUSI_NONCE + "\" value=\"" + nonce + "\">");
-
+				if( sessionObject.state == STATE_SHOW || sessionObject.state == STATE_NEW) {
+					// Store the reference UIDL on the compose form also
+					if (showUIDL != null) {
+						// reencode, as showUIDL may have changed, and also for XSS
+						b64UIDL = Base64.encode(showUIDL);
+						out.println("<input type=\"hidden\" name=\"" + B64UIDL + "\" value=\"" + b64UIDL + "\">");
+					} else if (sessionObject.state == STATE_NEW) {
+						// for NEW, try to get back to the current page if we weren't replying
+						int page = 1;
+						String sp = request.getParameter(CUR_PAGE);
+						if (sp != null) {
+							try {
+								page = Integer.parseInt(sp);
+							} catch (NumberFormatException nfe) {}
+						}
+						out.println("<input type=\"hidden\" name=\"" + CUR_PAGE + "\" value=\"" + page + "\">");
+					}
+					// Save sort order in case it changes later
+					String curSort = folder.getCurrentSortBy();
+					SortOrder curOrder = folder.getCurrentSortingDirection();
+					String fullSort = curOrder == SortOrder.DOWN ? '-' + curSort : curSort;
+					out.println("<input type=\"hidden\" name=\"" + CURRENT_SORT + "\" value=\"" + fullSort + "\">");
+				}
 				if( sessionObject.error != null && sessionObject.error.length() > 0 ) {
 					out.println( "<div class=\"notifications\" onclick=\"this.remove()\"><p class=\"error\">" + quoteHTML(sessionObject.error).replace("\n", "<br>") + "</p></div>" );
 				}
@@ -1829,7 +1965,7 @@ public class WebMail extends HttpServlet
 					showFolder( out, sessionObject, request );
 				
 				else if( sessionObject.state == STATE_SHOW )
-					showMessage( out, sessionObject );
+					showMessage(out, sessionObject, showUIDL, buttonPressed(request, DELETE));
 				
 				else if( sessionObject.state == STATE_NEW )
 					showCompose( out, sessionObject, request );
@@ -1841,6 +1977,24 @@ public class WebMail extends HttpServlet
 				out.println( "</form><div class=\"footer\"><p class=\"footer\">susimail &copy; 2004-2005 susi</p></div></div></body>\n</html>");
 				out.flush();
 		}
+	}
+
+	/**
+	 *  Redirect a POST to a GET (P-R-G), replacing the query string
+	 *  @param q starting with '?' or null
+	 *  @since 0.9.33 adapted from I2PSnarkServlet
+	 */
+	private void sendRedirect(HttpServletRequest req, HttpServletResponse resp, String q) throws IOException {
+		String url = req.getRequestURL().toString();
+		StringBuilder buf = new StringBuilder(128);
+		int qq = url.indexOf('?');
+		if (qq >= 0)
+			url = url.substring(0, qq);
+		buf.append(url);
+		if (q.length() > 0)
+			buf.append(q.replace("&amp;", "&"));  // no you don't html escape the redirect header
+		resp.setHeader("Location", buf.toString());
+		resp.sendError(302, "Moved");
 	}
 
 	/**
@@ -1864,15 +2018,13 @@ public class WebMail extends HttpServlet
 		if(part != null) {
 			ReadBuffer content = part.buffer;
 			
-			if( part.encoding != null ) {
-					try {
-						// why +2 ??
-						content = part.decode(2);
-					}
-					catch (DecodingException e) {
-						sessionObject.error += _t("Error decoding content: {0}", e.getMessage()) + '\n';
-						content = null;
-					}
+			// we always decode, even if part.encoding is null, will default to 7bit
+			try {
+				// +2 probably for \r\n
+				content = part.decode(2);
+			} catch (DecodingException e) {
+				sessionObject.error += _t("Error decoding content: {0}", e.getMessage()) + '\n';
+				content = null;
 			}
 			if(content == null)
 				return false;
@@ -2040,8 +2192,21 @@ public class WebMail extends HttpServlet
 			sessionObject.error += "Internal error: Header line encoder not available.";
 		}
 
+		long total = text.length();
+		boolean multipart = sessionObject.attachments != null && !sessionObject.attachments.isEmpty();
+		if (multipart) {
+			for(Attachment a : sessionObject.attachments) {
+				total += a.getSize();
+			}
+		}
+		if (total > SMTPClient.BINARY_MAX_SIZE) {
+			ok = false;
+			sessionObject.error += _t("Email is too large, max is {0}",
+			                          DataHelper.formatSize2(SMTPClient.BINARY_MAX_SIZE, false) + 'B') + '\n';
+		}
+
 		if( ok ) {
-			StringBuilder body = new StringBuilder();
+			StringBuilder body = new StringBuilder(1024);
 			body.append( "From: " + from + "\r\n" );
 			Mail.appendRecipients( body, toList, "To: " );
 			Mail.appendRecipients( body, ccList, "To: " );
@@ -2053,15 +2218,14 @@ public class WebMail extends HttpServlet
 				sessionObject.error += e.getMessage();
 			}
 			String boundary = "_=" + I2PAppContext.getGlobalContext().random().nextLong();
-			boolean multipart = false;
-			if( sessionObject.attachments != null && !sessionObject.attachments.isEmpty() ) {
-				multipart = true;
+			if (multipart) {
 				body.append( "\r\nMIME-Version: 1.0\r\nContent-type: multipart/mixed; boundary=\"" + boundary + "\"\r\n\r\n" );
 			}
 			else {
 				body.append( "\r\nMIME-Version: 1.0\r\nContent-type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" );
 			}
 			try {
+				// TODO pass the text separately to SMTP and let it pick the encoding
 				if( multipart )
 					body.append( "--" + boundary + "\r\nContent-type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" );
 				body.append( qp.encode( text ) );
@@ -2070,28 +2234,18 @@ public class WebMail extends HttpServlet
 				sessionObject.error += e.getMessage();
 			}
 
-			if( multipart ) {
-				for( Attachment attachment : sessionObject.attachments ) {
-					body.append( "\r\n--" + boundary + "\r\nContent-type: " + attachment.getContentType() + "\r\nContent-Disposition: attachment; filename=\"" + attachment.getFileName() + "\"\r\nContent-Transfer-Encoding: " + attachment.getTransferEncoding() + "\r\n\r\n" );
-					body.append( attachment.getData() );
-				}
-				body.append( "\r\n--" + boundary + "--\r\n" );
-			}
-			
-			// TODO set to the StringBuilder instead so SMTP can replace() in place
-			sessionObject.sentMail = body.toString();	
+			// set to the StringBuilder so SMTP can replace() in place
+			sessionObject.sentMail = body;	
 			
 			if( ok ) {
 				SMTPClient relay = new SMTPClient();
 				if( relay.sendMail( sessionObject.host, sessionObject.smtpPort,
 						sessionObject.user, sessionObject.pass,
-						sender, recipients.toArray(), sessionObject.sentMail ) ) {
-					
+						sender, recipients.toArray(), sessionObject.sentMail,
+				                sessionObject.attachments, boundary)) {
 					sessionObject.info += _t("Mail sent.");
-					
 					sessionObject.sentMail = null;	
-					if( sessionObject.attachments != null )
-						sessionObject.attachments.clear();
+					sessionObject.clearAttachments();
 				}
 				else {
 						ok = false;
@@ -2260,28 +2414,61 @@ public class WebMail extends HttpServlet
 		//if (Config.hasConfigFile())
 		//	out.println(button( RELOAD, _t("Reload Config") ) + spacer);
 		out.println(button( LOGOUT, _t("Logout") ));
-		if (sessionObject.folder.getPages() > 1)
-			showPageButtons(out, sessionObject.folder);
+		Folder<String> folder = sessionObject.folder;
+		int page = 1;
+		if (folder.getPages() > 1) {
+			String sp = request.getParameter(CUR_PAGE);
+			if (sp != null) {
+				try {
+					page = Integer.parseInt(sp);
+				} catch (NumberFormatException nfe) {}
+			}
+			folder.setCurrentPage(page);
+			showPageButtons(out, page, folder.getPages(), true);
+		}
 		out.println("</div>");
 
 
-		String curSort = sessionObject.folder.getCurrentSortBy();
-		Folder.SortOrder curOrder = sessionObject.folder.getCurrentSortingDirection();
+		SortOrder curOrder;
+		String curSort = request.getParameter(SORT);
+		String fullSort;
+		if (curSort == null)
+			curSort = request.getParameter(CURRENT_SORT);
+		if (curSort != null && VALID_SORTS.contains(curSort)) {
+                        fullSort = curSort;
+			if (curSort.startsWith("-")) {
+				curSort = curSort.substring(1);
+				curOrder = SortOrder.DOWN;
+			} else {
+				curOrder = SortOrder.UP;
+			}
+			// TODO don't store in session
+			if (curOrder != folder.getCurrentSortingDirection() || !curSort.equals(folder.getCurrentSortBy())) {
+			    folder.setSortingDirection(curOrder);
+			    folder.sortBy(curSort);
+			}
+		} else {
+			curSort = folder.getCurrentSortBy();
+			curOrder = folder.getCurrentSortingDirection();
+			fullSort = curOrder == SortOrder.DOWN ? '-' + curSort : curSort;
+		}
+		out.println("<input type=\"hidden\" name=\"" + CURRENT_SORT + "\" value=\"" + fullSort + "\">");
+		if (curSort.startsWith("-"))
+			curSort = curSort.substring(1);
 		out.println("<table id=\"mailbox\" cellspacing=\"0\" cellpadding=\"5\">\n" +
 			"<tr><td colspan=\"9\"><hr></td></tr>\n<tr><th title=\"" + _t("Mark for deletion") + "\">&nbsp;</th>" +
-			thSpacer + "<th>" + sortHeader( SORT_SENDER, _t("From"), sessionObject.imgPath, curSort, curOrder ) + "</th>" +
-			thSpacer + "<th>" + sortHeader( SORT_SUBJECT, _t("Subject"), sessionObject.imgPath, curSort, curOrder ) + "</th>" +
-			thSpacer + "<th>" + sortHeader( SORT_DATE, _t("Date"), sessionObject.imgPath, curSort, curOrder ) +
+			thSpacer + "<th>" + sortHeader(SORT_SENDER, _t("From"), sessionObject.imgPath, curSort, curOrder, page) + "</th>" +
+			thSpacer + "<th>" + sortHeader(SORT_SUBJECT, _t("Subject"), sessionObject.imgPath, curSort, curOrder, page) + "</th>" +
+			thSpacer + "<th>" + sortHeader(SORT_DATE, _t("Date"), sessionObject.imgPath, curSort, curOrder, page) +
 			//sortHeader( SORT_ID, "", sessionObject.imgPath ) +
 			"</th>" +
-			thSpacer + "<th>" + sortHeader( SORT_SIZE, _t("Size"), sessionObject.imgPath, curSort, curOrder ) + "</th></tr>" );
+			thSpacer + "<th>" + sortHeader(SORT_SIZE, _t("Size"), sessionObject.imgPath, curSort, curOrder, page) + "</th></tr>" );
 		int bg = 0;
 		int i = 0;
-		for( Iterator<String> it = sessionObject.folder.currentPageIterator(); it != null && it.hasNext(); ) {
+		for (Iterator<String> it = folder.currentPageIterator(); it != null && it.hasNext(); ) {
 			String uidl = it.next();
 			Mail mail = sessionObject.mailCache.getMail( uidl, MailCache.FetchMode.HEADER );
-			if (mail == null) {
-				i++;
+			if (mail == null || !mail.hasHeader()) {
 				continue;
 			}
 			String type;
@@ -2291,11 +2478,13 @@ public class WebMail extends HttpServlet
 				type = "linknew";
 			else
 				type = "linkold";
-			String link = "<a href=\"" + myself + "?" + SHOW + "=" + i + "\" class=\"" + type + "\">";
-			String jslink = " onclick=\"document.location='" + myself + '?' + SHOW + '=' + i + "';\" ";
+			// this is I2P Base64, not the encoder
+			String b64UIDL = Base64.encode(uidl);
+			String link = "<a href=\"" + myself + "?" + SHOW + "=" + b64UIDL + "\" class=\"" + type + "\">";
+			String jslink = " onclick=\"document.location='" + myself + '?' + SHOW + '=' + b64UIDL + "';\" ";
 			
 			boolean idChecked = false;
-			String checkId = sessionObject.pageChanged ? null : request.getParameter( "check" + i );
+			String checkId = sessionObject.pageChanged ? null : request.getParameter( "check" + b64UIDL );
 			
 			if( checkId != null && checkId.equals("1"))
 				idChecked = true;
@@ -2312,7 +2501,7 @@ public class WebMail extends HttpServlet
 			//		", invert=" + sessionObject.invert +
 			//		", clear=" + sessionObject.clear );
 			out.println( "<tr class=\"list" + bg + "\">" +
-					"<td><input type=\"checkbox\" class=\"optbox\" name=\"check" + i + "\" value=\"1\"" + 
+					"<td><input type=\"checkbox\" class=\"optbox\" name=\"check" + b64UIDL + "\" value=\"1\"" + 
 					" onclick=\"deleteboxclicked();\" " +
 					( idChecked ? "checked" : "" ) + ">" + "</td><td " + jslink + ">" +
 					(mail.isNew() ? "<img src=\"/susimail/icons/flag_green.png\" alt=\"\" title=\"" + _t("Message is new") + "\">" : "&nbsp;") + "</td><td " + jslink + ">" +
@@ -2330,10 +2519,10 @@ public class WebMail extends HttpServlet
 		if (i == 0)
 			out.println("<tr><td colspan=\"9\" align=\"center\"><div id=\"emptymailbox\"><i>" + _t("No messages") + "</i></div></td></tr>");
 		out.println( "<tr class=\"bottombuttons\"></tr>");
-		if (sessionObject.folder.getPages() > 1 && i > 30) {
+		if (folder.getPages() > 1 && i > 30) {
 			// show the buttons again if page is big
 			out.println("<tr class=\"bottombuttons\"><td colspan=\"9\" align=\"center\">");
-			showPageButtons(out, sessionObject.folder);
+			showPageButtons(out, page, folder.getPages(), false);
 			out.println("</td></tr>");
 		}
 		out.println("<tr class=\"bottombuttons\"><td colspan=\"5\" align=\"left\">");
@@ -2358,7 +2547,7 @@ public class WebMail extends HttpServlet
 		// moved to config page
 		//out.print(
 		//	_t("Page Size") + ":&nbsp;<input type=\"text\" style=\"text-align: right;\" name=\"" + PAGESIZE + "\" size=\"4\" value=\"" +  sessionObject.folder.getPageSize() + "\">" +
-		//	"&nbsp;" + 
+		//	"&nbsp;" +
 		//	button( SETPAGESIZE, _t("Set") ) );
 		out.print("<br>");
 		out.print(button(CONFIGURE, _t("Settings")));
@@ -2369,68 +2558,111 @@ public class WebMail extends HttpServlet
 	/**
 	 *  first prev next last
 	 */
-	private static void showPageButtons(PrintWriter out, Folder<?> folder) {
-		out.println(
-			"<table id=\"pagenav\"><tr><td>" +
-			( folder.isFirstPage() ?
-						button2( FIRSTPAGE, _t("First") ) + "&nbsp;" + button2( PREVPAGE, _t("Previous") ) :
-						button( FIRSTPAGE, _t("First") ) + "&nbsp;" + button( PREVPAGE, _t("Previous") ) ) +
-			"</td><td>" +
-			_t("Page {0} of {1}", folder.getCurrentPage(), folder.getPages()) +
-			"</td><td>" +
-			( folder.isLastPage() ? 
-						button2( NEXTPAGE, _t("Next") ) + "&nbsp;" + button2( LASTPAGE, _t("Last") ) :
-						button( NEXTPAGE, _t("Next") ) + "&nbsp;" + button( LASTPAGE, _t("Last") ) ) +
-			"</td></tr></table>"
-
-		);
+	private static void showPageButtons(PrintWriter out, int page, int pages, boolean outputHidden) {
+		out.println("<table id=\"pagenav\"><tr><td>");
+		if (outputHidden)
+			out.println("<input type=\"hidden\" name=\"" + CUR_PAGE + "\" value=\"" + page + "\">");
+		String t1 = _t("First");
+		String t2 = _t("Previous");
+		if (page <= 1) {
+			out.println(button2(FIRSTPAGE, t1) + "&nbsp;" + button2(PREVPAGE, t2));
+		} else {
+			if (outputHidden)
+				out.println("<input type=\"hidden\" name=\"" + PREV_PAGE_NUM + "\" value=\"" + (page - 1) + "\">");
+			out.println(button(FIRSTPAGE, t1) + "&nbsp;" + button(PREVPAGE, t2));
+		}
+		out.println("</td><td>" +
+			_t("Page {0} of {1}", page, pages) +
+			"</td><td>");
+		t1 = _t("Next");
+		t2 = _t("Last");
+		if (page >= pages) {
+			out.println(button2(NEXTPAGE, t1) + "&nbsp;" + button2(LASTPAGE, t2));
+		} else {
+			if (outputHidden)
+				out.println("<input type=\"hidden\" name=\"" + NEXT_PAGE_NUM + "\" value=\"" + (page + 1) + "\">");
+			out.println(button(NEXTPAGE, t1) + "&nbsp;" + button(LASTPAGE, t2));
+		}
+		out.println("</td></tr></table>");
 	}
 
 	/**
 	 * 
 	 * @param out
 	 * @param sessionObject
+	 * @param reallyDelete was the delete button pushed, if so, show the really delete? message
 	 */
-	private static void showMessage( PrintWriter out, SessionObject sessionObject )
+	private static void showMessage(PrintWriter out, SessionObject sessionObject, String showUIDL, boolean reallyDelete)
 	{
-		if( sessionObject.reallyDelete ) {
-			out.println( "<p class=\"error\">" + _t("Really delete this message?") + " " + button( REALLYDELETE, _t("Yes, really delete it!") ) + "</p>" );
+		if (reallyDelete) {
+			out.println( "<p class=\"error\">" + _t("Really delete this message?") + ' ' +
+			             button(REALLYDELETE, _t("Yes, really delete it!")) + ' ' +
+			             button(CANCEL, _t("Cancel")) +
+			             "</p>");
 		}
-		Mail mail = sessionObject.mailCache.getMail( sessionObject.showUIDL, MailCache.FetchMode.ALL );
+		Mail mail = sessionObject.mailCache.getMail(showUIDL, MailCache.FetchMode.ALL);
 		if(!RELEASE && mail != null && mail.hasBody()) {
 			out.println( "<!--" );
 			out.println( "Debug: Mail header and body follow");
-			// FIXME encoding, escaping --, etc... but disabled.
 			ReadBuffer body = mail.getBody();
-			out.println( quoteHTML( new String(body.content, body.offset, body.length ) ) );
+			out.println(quoteHTML(new String(body.content, body.offset, body.length)).replace("--", "&mdash;"));
 			out.println( "-->" );
 		}
 		out.println("<div class=\"topbuttons\">");
-		out.println( button( NEW, _t("New") ) + spacer +
-			button( REPLY, _t("Reply") ) +
-			button( REPLYALL, _t("Reply All") ) +
-			button( FORWARD, _t("Forward") ) + spacer +
-			button( SAVE_AS, _t("Save As") ) + spacer);
-		if (sessionObject.reallyDelete)
-			out.println(button2(DELETE, _t("Delete")));
-		else
-			out.println(button(DELETE, _t("Delete")));
+		out.println( button( NEW, _t("New") ) + spacer);
+		boolean hasHeader = mail != null && mail.hasHeader();
+		if (hasHeader) {
+			out.println(button( REPLY, _t("Reply") ) +
+				button( REPLYALL, _t("Reply All") ) +
+				button( FORWARD, _t("Forward") ) + spacer +
+				button( SAVE_AS, _t("Save As") ) + spacer);
+			if (sessionObject.reallyDelete)
+				out.println(button2(DELETE, _t("Delete")));
+			else
+				out.println(button(DELETE, _t("Delete")));
+		}
 		out.println(button(LOGOUT, _t("Logout") ));
-		out.println("<div id=\"messagenav\">" +
-			( sessionObject.folder.isFirstElement( sessionObject.showUIDL ) ? button2( PREV, _t("Previous") ) : button( PREV, _t("Previous") ) ) + spacer +
-			button( LIST, _t("Back to Folder") ) + spacer +
-			( sessionObject.folder.isLastElement( sessionObject.showUIDL ) ? button2( NEXT, _t("Next") ) : button( NEXT, _t("Next") ) ));
+		// processRequest() will P-R-G the PREV and NEXT so we have a consistent URL
+		out.println("<div id=\"messagenav\">");
+		Folder<String> folder = sessionObject.folder;
+		if (hasHeader) {
+			String uidl = folder.getPreviousElement(showUIDL);
+			String text = _t("Previous");
+			if (uidl == null || folder.isFirstElement(showUIDL)) {
+				out.println(button2(PREV, text));
+			} else {
+				String b64UIDL = Base64.encode(uidl);
+				out.println("<input type=\"hidden\" name=\"" + PREV_B64UIDL + "\" value=\"" + b64UIDL + "\">");
+				out.println(button(PREV, text));
+			}
+			out.print(spacer);
+		}
+		int page = folder.getPageOf(showUIDL);
+		out.println("<input type=\"hidden\" name=\"" + CUR_PAGE + "\" value=\"" + page + "\">");
+		out.println(button( LIST, _t("Back to Folder") ) + spacer);
+		if (hasHeader) {
+			String uidl = folder.getNextElement(showUIDL);
+			String text = _t("Next");
+			if (uidl == null || folder.isLastElement(showUIDL)) {
+				out.println(button2(NEXT, text));
+			} else {
+				String b64UIDL = Base64.encode(uidl);
+				out.println("<input type=\"hidden\" name=\"" + NEXT_B64UIDL + "\" value=\"" + b64UIDL + "\">");
+				out.println(button(NEXT, text));
+			}
+			out.print(spacer);
+		}
 		out.println("</div></div>");
 		//if (Config.hasConfigFile())
 		//	out.println(button( RELOAD, _t("Reload Config") ) + spacer);
 		out.println( "<div id=\"viewmail\"><table id=\"message_full\" cellspacing=\"0\" cellpadding=\"5\">\n");
-		if( mail != null ) {
+		if (hasHeader) {
 			out.println("<tr><td colspan=\"2\"><table id=\"mailhead\">\n" +
 					"<tr><td colspan=\"2\" align=\"center\"><hr></td></tr>\n" +
 					"<tr><td align=\"right\">" + _t("From") +
 					":</td><td align=\"left\">" + quoteHTML( mail.sender ) + "</td></tr>\n" +
 					"<tr><td align=\"right\">" + _t("Subject") +
-					":</td><td align=\"left\">" + quoteHTML( mail.formattedSubject ) + "</td></tr>\n" +
+					":</td><td align=\"left\"><b>" + quoteHTML( mail.formattedSubject ) + "</b></td></tr>\n" +
 					"<tr><td align=\"right\">" + _t("Date") +
 					":</td><td align=\"left\">" + mail.quotedDate + "</td></tr>\n" +
 					"<tr><td colspan=\"2\" align=\"center\"><hr></td></tr>" +
@@ -2444,7 +2676,7 @@ public class WebMail extends HttpServlet
 			}
 		}
 		else {
-			out.println( "<tr class=\"mailbody\"><td colspan=\"2\" align=\"center\"><p class=\"error\">" + _t("Could not fetch mail.") + "</p></td></tr>\n" );
+			out.println( "<tr class=\"mailbody\"><td colspan=\"2\" align=\"center\"><p class=\"error\">" + _t("Message not found.") + "</p></td></tr>\n" );
 		}
 		out.println( "</table></div>" );
 	}

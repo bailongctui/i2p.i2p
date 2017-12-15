@@ -83,6 +83,7 @@ class Mail {
 		formattedSubject = unknown;
 		formattedDate = unknown;
 		localFormattedDate = unknown;
+		sender = unknown;
 		shortSender = unknown;
 		shortSubject = unknown;
 		quotedDate = unknown;
@@ -90,9 +91,9 @@ class Mail {
 	}
 
 	/**
-         *  This may or may not contain the body also.
-         *  @return may be null
-         */
+	 *  This may or may not contain the body also.
+	 *  @return if null, nothing has been loaded yet for this UIDL
+	 */
 	public synchronized ReadBuffer getHeader() {
 		return header;
 	}
@@ -104,6 +105,9 @@ class Mail {
 		parseHeaders();
 	}
 
+	/**
+	 *  @return if false, nothing has been loaded yet for this UIDL
+	 */
 	public synchronized boolean hasHeader() {
 		return header != null;
 	}
@@ -124,7 +128,7 @@ class Mail {
 		body = rb;
 		size = rb.length;
 		try {
-			part = new MailPart(rb);
+			part = new MailPart(uidl, rb);
 		} catch (DecodingException de) {
 			Debug.debug(Debug.ERROR, "Decode error: " + de);
 		} catch (RuntimeException e) {
@@ -319,9 +323,9 @@ class Mail {
 								shortSender = shortSender.substring(0, lt).trim();
 							else if (lt < 0 && shortSender.contains("@"))
 								shortSender = '<' + shortSender + '>';  // add missing <> (but thunderbird doesn't...)
-							boolean trim = shortSender.length() > 25;
+							boolean trim = shortSender.length() > 35;
 							if (trim)
-								shortSender = shortSender.substring( 0, 22 ).trim();
+								shortSender = shortSender.substring( 0, 32 ).trim();
 							shortSender = html.encode( shortSender );
 							if (trim)
 								shortSender += "&hellip;";  // must be after html encode

@@ -1,3 +1,137 @@
+2017-12-13 zzz
+ * i2ptunnel: Add internal sockets for SMTP and POP3 (ticket #2118)
+ * Util: InternalSocket improvements
+
+2017-12-11 zzz
+ * Jetty: Fix request log showing zero length for static content
+ * Startup: Raise open files ulimit (ticket #1967)
+
+2017-12-10 zzz
+ * Router: Change RI locking to a read/write lock (ticket #2096)
+
+2017-12-08 zzz
+ * SU3File: Flush and sync on extract (ticket #1941)
+ * SusiMail:
+   - Reference mails by UIDL, not index on page, put UIDL in
+     attachment links, remove session object UIDL (ticket #1373)
+   - Fix download of attachments without a Content-Transfer-Encoding
+   - Fix error return for attachment not found
+   - Fix handling of requests for unknown messages
+   - Set encoding for text attachments
+   - Add more safe mime types for downloading
+   - Add tooltips for icon-only buttons
+
+2017-12-07 zzz
+ * Console: Don't list aliased tunnels separately on
+   /tunnels and /configtunnels
+ * i2psnark: Better locking on BitField byte array
+ * SusiMail: Recheck max size if SMTP server reports less than default
+ * Util: Deprecate BigPipedInputStream
+
+2017-12-05 zzz
+ * Console: Fix multipart config for /configplugins
+ * SusiMail:
+   - Don't store attachments of composed email in-memory (ticket #1668)
+   - Fix bug corrupting sent text and text attachments
+     larger than about 1000 chars
+   - Fix bug corrupting some sent text and text attachments
+     containing '.'
+   - Fix handling of unimplemented encoders
+   - Add test code for encoders
+   - Error message improvements
+   - Adjust multipart size limits
+   - Better handling of errors when multipart limits are exceeded
+   - Test for total size limit
+
+2017-12-04 zzz
+ * Servlet: Refactor RequestWrapper to use Servlet 3.0 API (ticket #2109)
+
+2017-12-03 zzz
+ * i2ptunnel:
+   - Don't lose messages on refresh (ticket #2107)
+   - New clear messages button
+   - Hide message box if none
+
+2017-12-02 zzz
+ * i2ptunnel: Propagate resets from streaming to Socket
+   and vice versa (ticket #2071)
+ * Streaming: Send reset when receiving more data after locally closed,
+   rather than acking (ticket #2071)
+ * Tests: Fix up deprecation warnings
+
+2017-12-01 zzz
+ * Build: Split net.i2p.router.web into two packages
+ * Console: Move /configkeyring HTML to console, fix deletion,
+   don't truncate hashes, better form errors, tag for translation (ticket #2108)
+ * LeaseSet: Better error messages when decode fails (ticket #2108)
+ * Streaming: Double the RTO on congestion (ticket #1939)
+
+2017-11-27 zzz
+ * Debian: Exclude gradle, IntelliJ, Docker, .tx, gcj files from source tarballs
+
+2017-11-27 str4d
+ * Build: Add Gradle build scripts for compiling the codebase and generating
+   IDE project files.
+
+2017-11-26 zzz
+ * Build: Add xenial build option
+ * Console: Safer processing of changes on /configadvanced
+ * Context: Hopefully fix rare NPE on Android (ticket #2092)
+
+2017-11-25 zzz
+ * Console:
+   - Show full logger.config path on /configlogging
+   - Don't say 'Plugin downloaded' when installing from file
+ * Debian:
+   - Replace glassfish-javaee with libtaglibs-standard-* (ticket #2093)
+   - Remove libecj-java dependency (ticket #2094)
+
+2017-11-23 zzz
+ * i2ptunnel: Add timeout to header reads for CONNECT, HTTP, and SOCKS clients
+ * Wrapper 3.5.34
+
+2017-11-22 zzz
+ * i2psnark: Fix nbsp in logs on config change (ticket #2082)
+ * Streaming: Fix bug causing loopback hangs and
+   preventing desired ack behavior (ticket #1939)
+ * Tomcat 8.5.23
+
+2017-11-21 zzz
+ * EepGet: Refuse attempted redirect to HTTPS, won't work
+ * Reseed: Add support for reseeding via outproxy or Orchid (ticket #1841)
+
+2017-11-20 zzz
+ * HTTP Proxy: Better HTTP status message when no outproxy configured
+ * i2prouter: Fix echo -n on OSX
+ * Reseed: Add outproxy and Orchid proxy support (ticket #1841)
+
+2017-11-19 zzz
+ * Debian:
+   - Fix builds for x32 (ticket #2076)
+   - Incorporate patches 2 and 3 into build scripts
+ * DTG: On OSX, set dock icon, and enable by default
+
+2017-11-18 zzz
+ * Reseed:
+   - Add SOCKS proxy support (ticket #1130)
+   - Show proxy info, if applicable, in logs
+   - Show status in summary bar for manual reseed (previously hidden if more than 30 routers)
+   - Show status in summary bar after successul completion
+   - Show reseed button in summary bar if less than 50 known RIs (previously 30)
+   - Show current status on /configreseed if already running
+   - Consolidate proxy settings detection in ReseedRunner constructor
+   - Enhance help text on /configreseed (tickets #423, #1130)
+
+2017-11-17 zzz
+ * Addressbook: Fix adding alternates after importing an empty book (ticket #2072)
+ * Reseed: Add HTTPS proxy support (ticket #423)
+ * SOCKS: Move code from i2ptunnel to core, in prep for SSLEepGet use (ticket #1130)
+
+2017-11-16 zzz
+ * Console: Hide Reseed HTTP proxy options if no HTTP URLs (ticket #2007)
+ * i2psnark: Fix bad completion status after recheck (ticket #2046)
+ * Jetty 9.2.22
+
 2017-11-07 zzz
  * Utils: Constant-time password check
 

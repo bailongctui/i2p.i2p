@@ -49,14 +49,22 @@ class MailPart {
 	public final List<MailPart> parts;
 	public final boolean multipart, message;
 	public final ReadBuffer buffer;
+	/**
+	 *  the UIDL of the mail, same for all parts
+	 *  @since 0.9.33
+	 */
+	public final String uidl;
 	
-	public MailPart( ReadBuffer readBuffer ) throws DecodingException
+/// todo add UIDL to constructors, use in WebMail.showpart()
+
+	public MailPart(String uidl,  ReadBuffer readBuffer) throws DecodingException
 	{
-		this(readBuffer, readBuffer.offset, readBuffer.length);
+		this(uidl, readBuffer, readBuffer.offset, readBuffer.length);
 	}
 
-	public MailPart( ReadBuffer readBuffer, int offset, int length ) throws DecodingException
+	public MailPart(String uidl, ReadBuffer readBuffer, int offset, int length) throws DecodingException
 	{
+		this.uidl = uidl;
 		begin = offset;
 		end = offset + length;
 		buffer = readBuffer;
@@ -94,17 +102,18 @@ class MailPart {
 
 		for( int i = 0; i < headerLines.length; i++ )
 		{
-			if( headerLines[i].toLowerCase(Locale.US).startsWith( "content-transfer-encoding: " ) ) {
+			String hlc = headerLines[i].toLowerCase(Locale.US);
+			if( hlc.startsWith( "content-transfer-encoding: " ) ) {
 				x_encoding = getFirstAttribute( headerLines[i] ).toLowerCase(Locale.US);
 			}
-			else if( headerLines[i].toLowerCase(Locale.US).startsWith( "content-disposition: " ) ) {
+			else if( hlc.startsWith( "content-disposition: " ) ) {
 				x_disposition = getFirstAttribute( headerLines[i] ).toLowerCase(Locale.US);
 				String str;
 				str = getHeaderLineAttribute( headerLines[i], "filename" );
 				if( str != null )
 					x_name = str;
 			}
-			else if( headerLines[i].toLowerCase(Locale.US).startsWith( "content-type: " ) ) {
+			else if( hlc.startsWith( "content-type: " ) ) {
 				x_type = getFirstAttribute( headerLines[i] ).toLowerCase(Locale.US);
 				/*
 				 * extract boundary, name and charset from content type
@@ -124,10 +133,10 @@ class MailPart {
 				if( str != null )
 					x_charset = str.toUpperCase(Locale.US);
 			}
-			else if( headerLines[i].toLowerCase(Locale.US).startsWith( "content-description: " ) ) {
+			else if( hlc.startsWith( "content-description: " ) ) {
 				x_description = getFirstAttribute( headerLines[i] );
 			}
-			else if( headerLines[i].toLowerCase(Locale.US).startsWith( "mime-version: " ) ) {
+			else if( hlc.startsWith( "mime-version: " ) ) {
 				x_version = getFirstAttribute( headerLines[i] );
 			}
 		}
@@ -175,7 +184,7 @@ class MailPart {
 							
 							if( beginLastPart != -1 ) {
 								int endLastPart = Math.min(i + 2, end);
-								MailPart newPart = new MailPart( buffer, beginLastPart, endLastPart - beginLastPart );
+								MailPart newPart = new MailPart(uidl, buffer, beginLastPart, endLastPart - beginLastPart);
 								parts.add( newPart );
 							}
 							beginLastPart = k;
@@ -186,13 +195,13 @@ class MailPart {
 			}
 		}
 		else if( message ) {
-			MailPart newPart = new MailPart(buffer, beginBody, end - beginBody);
+			MailPart newPart = new MailPart(uidl, buffer, beginBody, end - beginBody);
 			parts.add( newPart );			
 		}
 	}
 
 	/**
-         *  @param offset 2 for sendAttachment, 0 otherwise, don't know why
+         *  @param offset 2 for sendAttachment, 0 otherwise, probably for \r\n
 	 *  @since 0.9.13
 	 */
 	public ReadBuffer decode(int offset) throws DecodingException {

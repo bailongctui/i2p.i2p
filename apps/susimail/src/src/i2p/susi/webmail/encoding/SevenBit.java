@@ -25,45 +25,25 @@ package i2p.susi.webmail.encoding;
 
 import i2p.susi.util.ReadBuffer;
 
-import net.i2p.data.DataHelper;
-
 /**
+ * Decode only.
  * @author susi
  */
-public class SevenBit implements Encoding {
+public class SevenBit extends Encoding {
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#getName()
-	 */
 	public String getName() {
 		return "7bit";
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#encode(byte[])
+        /**
+	 * @throws EncodingException always
 	 */
-	public String encode(byte[] in) {
-		// TODO Auto-generated method stub
-		return null;
+	public String encode(byte[] in) throws EncodingException {
+		throw new EncodingException("unsupported");
 	}
 
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#encode(java.lang.String)
-	 */
-	public String encode(String str) {
-		// TODO Auto-generated method stub
-		return null;
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(byte[])
-	 */
-	public ReadBuffer decode(byte[] in) throws DecodingException {
-		return decode( in, 0, in.length );
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(byte[], int, int)
+        /**
+	 * @throws DecodingException on illegal characters
 	 */
 	public ReadBuffer decode(byte[] in, int offset, int length)
 			throws DecodingException {
@@ -81,19 +61,4 @@ public class SevenBit implements Encoding {
 		}
 		return new ReadBuffer(in, backupOffset, backupLength);
 	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(java.lang.String)
-	 */
-	public ReadBuffer decode(String str) throws DecodingException {
-		return decode( DataHelper.getUTF8(str) );
-	}
-
-	/* (non-Javadoc)
-	 * @see i2p.susi23.mail.encoding.Encoding#decode(i2p.susi.webmail.util.ReadBuffer)
-	 */
-	public ReadBuffer decode(ReadBuffer in) throws DecodingException {
-		return decode( in.content, in.offset, in.length );
-	}
-
 }

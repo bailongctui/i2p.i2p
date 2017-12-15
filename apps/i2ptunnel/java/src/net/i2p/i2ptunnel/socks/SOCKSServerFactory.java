@@ -15,6 +15,7 @@ import java.util.Properties;
 import net.i2p.I2PAppContext;
 import net.i2p.data.DataHelper;
 import net.i2p.i2ptunnel.I2PTunnelHTTPClientBase;
+import net.i2p.socks.SOCKSException;
 
 /**
  * Factory class for creating SOCKS forwarders through I2P
@@ -72,7 +73,7 @@ class SOCKSServerFactory {
             }
         } catch (IOException e) {
             //_log.debug("error reading SOCKS protocol version");
-            throw new SOCKSException("Connection error (" + e.getMessage() + ")");
+            throw new SOCKSException("Connection error", e);
         }
 
         return serv;

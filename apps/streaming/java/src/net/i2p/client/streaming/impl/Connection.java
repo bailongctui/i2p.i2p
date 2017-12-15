@@ -200,8 +200,11 @@ class Connection {
                 // no need to wait until the other side has ACKed us before sending the first few wsize
                 // packets through
 		// Incorrect assumption, the constructor defaults _connected to true --Sponge
-                if (!_connected.get())
+                if (!_connected.get()) {
+                    if (getResetReceived())
+                        throw new I2PSocketException(I2PSocketException.STATUS_CONNECTION_RESET);
                     throw new IOException("disconnected");
+                }
                 if (_outputStream.getClosed())
                     throw new IOException("output stream closed");
                 started = true;
@@ -1017,6 +1020,8 @@ class Connection {
     public void setChoking(boolean on) {
         if (on != _isChoking) {
             _isChoking = on;
+           if (_log.shouldWarn())
+               _log.warn("Choking changed to " + on + " on " + this);
            if (!on)
                _unchokesToSend.set(UNCHOKES_TO_SEND);
            ackImmediately();
@@ -1031,7 +1036,11 @@ class Connection {
      *  @since 0.9.29
      */
     public void setChoked(boolean on) {
-        _isChoked = on;
+        if (on != _isChoked) {
+           _isChoked = on;
+           if (_log.shouldWarn())
+               _log.warn("Choked changed to " + on + " on " + this);
+        }
         if (on) {
             congestionOccurred();
             // https://en.wikipedia.org/wiki/Transmission_Control_Protocol
@@ -1489,8 +1498,12 @@ class Connection {
                         if (newWindowSize <= 0)
                             newWindowSize = 1;
                         
-                        // setRTT has its own ceiling
-                        //getOptions().setRTT(getOptions().getRTT() + 10*1000);
+                        // The timeout for _this_ packet will be doubled below, but we also
+                        // need to double the RTO for the _next_ packets.
+                        // See RFC 6298 section 5 item 5.5
+                        // This prevents being stuck at a window size of 1, retransmitting every packet,
+                        // never updating the RTT or RTO.
+                        getOptions().doubleRTO();
                         getOptions().setWindowSize(newWindowSize);
 
                         if (_log.shouldLog(Log.INFO))

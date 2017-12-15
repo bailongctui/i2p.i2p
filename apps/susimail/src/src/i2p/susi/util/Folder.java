@@ -352,6 +352,7 @@ public class Folder<O extends Object> {
 	 * @param x Position of the element on the current page.
 	 * @return Element on the current page on the given position.
 	 */
+/****  unused, we now fetch by UIDL, not position
 	public synchronized O getElementAtPosXonCurrentPage( int x )
 	{
 		O result = null;
@@ -364,6 +365,7 @@ public class Folder<O extends Object> {
 		}
 		return result;
 	}
+****/
 
 	/**
 	 * Sets the sorting direction of the folder.
@@ -505,5 +507,23 @@ public class Folder<O extends Object> {
 		if( elements == null )
 			return false;
 		return elements[0].equals( element );
+	}
+	
+	/**
+	 * Returns the page this element is on, using the current sort, or 1 if not found
+	 * 
+	 * @param element
+	 * @since 0.9.33
+	 */
+	public synchronized int getPageOf(O element)
+	{
+		if (pages <= 1)
+			return 1;
+		if (elements == null)
+			return 1;
+		int i = getIndexOf(element);
+		if (i < 0)
+			return 1;
+		return 1 + (i / getPageSize());
 	}
 }

@@ -494,11 +494,12 @@ public class DataHelper {
      *                                  or a value contains '#' or '\n'
      */
     public static void storeProps(Properties props, File file) throws IOException {
+        FileOutputStream fos = null;
         PrintWriter out = null;
         IllegalArgumentException iae = null;
         File tmpFile = new File(file.getPath() + ".tmp");
         try {
-            FileOutputStream fos = new SecureFileOutputStream(tmpFile);
+            fos = new SecureFileOutputStream(tmpFile);
             out = new PrintWriter(new BufferedWriter(new OutputStreamWriter(fos, "UTF-8")));
             out.println("# NOTE: This I2P config file must use UTF-8 encoding");
             for (Map.Entry<Object, Object> entry : props.entrySet()) {
@@ -533,6 +534,7 @@ public class DataHelper {
                 throw new IOException("Failed rename from " + tmpFile + " to " + file);
         } finally {
             if (out != null) out.close();
+            if (fos != null) try { fos.close(); } catch (IOException ioe) {}
         }
         if (iae != null)
             throw iae;
@@ -1524,7 +1526,7 @@ public class DataHelper {
 
     /**
      * Caller should append 'B' or 'b' as appropriate
-     * NOTE: formatDuration2() recommended in most cases for readability
+     * NOTE: formatSize2() recommended in most cases for readability
      */
     public static String formatSize(long bytes) {
         float val = bytes;
@@ -1564,7 +1566,7 @@ public class DataHelper {
     /**
      * Like formatSize but with a space after the number
      * This seems consistent with most style guides out there.
-     * @param nonBreaking use an HTML thin non-breaking space (&#8239;)
+     * @param nonBreaking use an HTML thin non-breaking space (&amp;#8239;)
      * @since 0.9.31
      */
     public static String formatSize2(long bytes, boolean nonBreaking) {

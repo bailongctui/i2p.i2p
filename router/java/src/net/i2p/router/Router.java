@@ -20,6 +20,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import gnu.getopt.Getopt;
 
@@ -76,7 +77,7 @@ public class Router implements RouterClock.ClockShiftListener {
     /** full path */
     private String _configFilename;
     private RouterInfo _routerInfo;
-    private final Object _routerInfoLock = new Object();
+    private final ReentrantReadWriteLock _routerInfoLock = new ReentrantReadWriteLock(false);
     /** not for external use */
     public final Object routerInfoFileLock = new Object();
     private final Object _configFileLock = new Object();
@@ -308,7 +309,8 @@ public class Router implements RouterClock.ClockShiftListener {
         // i2p.dir.log defaults to i2p.dir.router
         // i2p.dir.pid defaults to i2p.dir.router
         // i2p.dir.base defaults to user.dir == $CWD
-        _context = new RouterContext(this, envProps);
+        _context = new RouterContext(this, envProps, false);
+        RouterContext.setGlobalContext(_context);
         _eventLog = new EventLog(_context, new File(_context.getRouterDir(), EVENTLOG));
 
         // This is here so that we can get the directory location from the context
@@ -516,10 +518,17 @@ public class Router implements RouterClock.ClockShiftListener {
      *
      *  Warning - risk of deadlock - do not call while holding locks
      *
+     *  Note: Due to lock contention, especially during a
+     *  rebuild of the router info, this may take a long time.
+     *  For determining the current status of the router, use
+     *  RouterContext.commSystem().getStatus().
      */
     public RouterInfo getRouterInfo() {
-        synchronized (_routerInfoLock) {
+        _routerInfoLock.readLock().lock();
+        try {
             return _routerInfo;
+        } finally {
+            _routerInfoLock.readLock().unlock();
         }
     }
 
@@ -531,8 +540,11 @@ public class Router implements RouterClock.ClockShiftListener {
      *
      */
     public void setRouterInfo(RouterInfo info) { 
-        synchronized (_routerInfoLock) {
+        _routerInfoLock.writeLock().lock();
+        try {
             _routerInfo = info; 
+        } finally {
+            _routerInfoLock.writeLock().unlock();
         }
         if (_log.shouldLog(Log.INFO))
             _log.info("setRouterInfo() : " + info, new Exception("I did it"));
@@ -844,7 +856,12 @@ public class Router implements RouterClock.ClockShiftListener {
     /**
      * Rebuild and republish our routerInfo since something significant 
      * has changed.
+     * This is a non-blocking rebuild.
+     *
      * Not for external use.
+     *
+     * Warning - risk of deadlock - do not call while holding locks
+     *
      */
     public void rebuildRouterInfo() { rebuildRouterInfo(false); }
 
@@ -855,12 +872,17 @@ public class Router implements RouterClock.ClockShiftListener {
      *
      *  Warning - risk of deadlock - do not call while holding locks
      *
+     * @param blockingRebuild If true, netdb publish will happen in-line.
+     *                        This may take a long time.
      */
     public void rebuildRouterInfo(boolean blockingRebuild) {
         if (_log.shouldLog(Log.INFO))
             _log.info("Rebuilding new routerInfo");
-        synchronized (_routerInfoLock) {
+        _routerInfoLock.writeLock().lock();
+        try {
             locked_rebuildRouterInfo(blockingRebuild);
+        } finally {
+            _routerInfoLock.writeLock().unlock();
         }
     }
         
@@ -951,6 +973,21 @@ public class Router implements RouterClock.ClockShiftListener {
     @Deprecated
     public static final char CAPABILITY_NEW_TUNNEL = 'T';
     
+    /** @since 0.9.33 */
+    public static final int MIN_BW_K = 0;
+    /** @since 0.9.33 */
+    public static final int MIN_BW_L = 12;
+    /** @since 0.9.33 */
+    public static final int MIN_BW_M = 48;
+    /** @since 0.9.33 */
+    public static final int MIN_BW_N = 64;
+    /** @since 0.9.33 */
+    public static final int MIN_BW_O = 128;
+    /** @since 0.9.33 */
+    public static final int MIN_BW_P = 256;
+    /** @since 0.9.33 */
+    public static final int MIN_BW_X = 2000;
+
     /**
      *  The current bandwidth class.
      *  For building our RI. Not for external use.
@@ -966,17 +1003,17 @@ public class Router implements RouterClock.ClockShiftListener {
         String force = _context.getProperty(PROP_FORCE_BWCLASS);
         if (force != null && force.length() > 0) {
             return force.charAt(0);
-        } else if (bwLim < 12) {
+        } else if (bwLim < MIN_BW_L) {
             return CAPABILITY_BW12;
-        } else if (bwLim <= 48) {
+        } else if (bwLim <= MIN_BW_M) {
             return CAPABILITY_BW32;
-        } else if (bwLim <= 64) {
+        } else if (bwLim <= MIN_BW_N) {
             return CAPABILITY_BW64;
-        } else if (bwLim <= 128) {
+        } else if (bwLim <= MIN_BW_O) {
             return CAPABILITY_BW128;
-        } else if (bwLim <= 256) {
+        } else if (bwLim <= MIN_BW_P) {
             return CAPABILITY_BW256;
-        } else if (bwLim <= 2000) {    // TODO adjust threshold
+        } else if (bwLim <= MIN_BW_X) {    // TODO adjust threshold
             // 512 supported as of 0.9.18;
             return CAPABILITY_BW512;
         } else {
